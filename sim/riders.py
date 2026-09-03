@@ -1,4 +1,9 @@
-"""Simulated riders that request trips at a steady rate and ride them to completion."""
+"""Simulated riders that request trips at a steady rate and ride them to completion.
+
+The driver's pings move a trip through en_route, arrived and in_trip on their
+own; the rider only steps in to end a trip that the driver has not finished
+within the ride window, so a 60 second run still completes every ride.
+"""
 
 from __future__ import annotations
 
@@ -16,9 +21,9 @@ from sim.city import random_point
 
 log = logging.getLogger("sim.riders")
 
-PICKUP_TO_START_S = 3.0
-START_TO_COMPLETE_S = 4.0
+RIDE_WINDOW_S = 7.0
 MATCH_TIMEOUT_S = 20.0
+ACTIVE = {"matched", "en_route", "arrived", "in_trip"}
 
 
 @dataclass
@@ -95,10 +100,17 @@ class RiderLoad:
         else:
             record.final_status = "requested"
             return
-        await asyncio.sleep(PICKUP_TO_START_S)
-        await self._post(client, record, "start")
-        await asyncio.sleep(START_TO_COMPLETE_S)
-        trip = await self._post(client, record, "complete")
+        deadline = time.monotonic() + RIDE_WINDOW_S
+        while time.monotonic() < deadline:
+            await asyncio.sleep(1.0)
+            try:
+                trip = (await client.get(f"{self.ride_url}/rides/{record.trip_id}")).json()
+            except (httpx.HTTPError, ValueError):
+                continue
+            if trip["status"] not in ACTIVE:
+                break
+        else:
+            trip = await self._post(client, record, "complete")
         if trip is not None:
             record.final_status = trip["status"]
             record.events = [e["event"] for e in trip.get("events", [])]

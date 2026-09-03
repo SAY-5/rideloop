@@ -1,7 +1,9 @@
 """Simulated drivers that post a position every second.
 
 A driver wanders the grid until the location service reports it as busy, then
-looks up its trip and heads for the pickup. Once released it wanders again.
+looks up its trip, heads for the pickup, waits for the rider and drives on to
+the dropoff. The location service advances the trip from those pings and
+releases the driver at the dropoff, after which it wanders again.
 """
 
 from __future__ import annotations
@@ -100,7 +102,10 @@ class DriverFleet:
             return
         try:
             trip = (await self._client.get(f"{self.ride_url}/rides/{trip_id}")).json()
-            driver.set_target(*latlng_to_local(trip["pickup_lat"], trip["pickup_lng"]))
+            driver.set_route(
+                latlng_to_local(trip["pickup_lat"], trip["pickup_lng"]),
+                latlng_to_local(trip["dropoff_lat"], trip["dropoff_lng"]),
+            )
         except (httpx.HTTPError, KeyError, ValueError):
             driver.clear_target()
 

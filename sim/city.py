@@ -12,6 +12,8 @@ CITY_CENTER = (37.7749, -122.4194)
 CITY_HALF_M = 3000.0
 BLOCK_M = 250.0
 DRIVER_SPEED_MPS = 11.0
+# Seconds a driver waits at the pickup before heading for the dropoff.
+PICKUP_DWELL_S = 3.0
 
 HEADINGS = (0.0, 90.0, 180.0, 270.0)
 
@@ -38,6 +40,8 @@ class SimDriver:
     east_m: float = 0.0
     heading: float = 0.0
     target: tuple[float, float] | None = None
+    dropoff: tuple[float, float] | None = None
+    dwell_s: float = 0.0
     trip_id: str | None = None
     speed_mps: float = DRIVER_SPEED_MPS
     _turn_at: float = field(default=0.0, repr=False)
@@ -60,8 +64,16 @@ class SimDriver:
     def set_target(self, north_m: float, east_m: float) -> None:
         self.target = (north_m, east_m)
 
+    def set_route(self, pickup: tuple[float, float], dropoff: tuple[float, float]) -> None:
+        """Head for the pickup, pause there, then carry on to the dropoff."""
+        self.target = pickup
+        self.dropoff = dropoff
+        self.dwell_s = 0.0
+
     def clear_target(self) -> None:
         self.target = None
+        self.dropoff = None
+        self.dwell_s = 0.0
 
     def _steer(self) -> None:
         if self.target is not None:
@@ -82,6 +94,14 @@ class SimDriver:
         if abs(self.east_m) >= CITY_HALF_M and self.heading in (90.0, 270.0):
             self.heading = 270.0 if self.east_m > 0 else 90.0
 
+    def _at_target(self, dt_s: float) -> None:
+        """Parked at the current target: dwell at a pickup, then go on to the dropoff."""
+        if self.dropoff is None:
+            return
+        self.dwell_s += dt_s
+        if self.dwell_s >= PICKUP_DWELL_S:
+            self.target, self.dropoff, self.dwell_s = self.dropoff, None, 0.0
+
     def step(self, dt_s: float) -> tuple[float, float, float]:
         """Advance the simulation and return (lat, lng, heading)."""
         self._steer()
@@ -92,6 +112,7 @@ class SimDriver:
             remaining = math.hypot(dn, de)
             if remaining <= dist:
                 self.north_m, self.east_m = self.target
+                self._at_target(dt_s)
                 return (*self.latlng(), self.heading)
         rad = math.radians(self.heading)
         self.north_m += math.cos(rad) * dist
