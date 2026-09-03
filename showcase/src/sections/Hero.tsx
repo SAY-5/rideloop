@@ -2,19 +2,8 @@ import { motion, useReducedMotion } from "framer-motion";
 import { CityMap } from "../components/CityMap";
 import { CountUp } from "../components/CountUp";
 import { useWorld } from "../sim/WorldProvider";
+import { REAL } from "../real";
 
-/** Figures read back from the running system in `make demo` (README, RideLoop demo summary). */
-export const REAL = {
-  drivers: 300,
-  submitted: 600,
-  matched: 600,
-  perMinute: 601,
-  p50: 59,
-  p95: 101,
-  ttlSeconds: 20,
-  visibleAfterS: 3,
-  goneAfterS: 19,
-};
 
 export function Hero() {
   const { world } = useWorld();

@@ -1,0 +1,20 @@
+/** Figures read back from the running system by `make demo` (README, RideLoop demo summary). */
+export const REAL = {
+  drivers: 300,
+  positionPosts: 8092,
+  submitted: 600,
+  ratePerSecond: 10,
+  durationS: 60,
+  matched: 600,
+  completed: 600,
+  perMinute: 601,
+  spanS: 59.9,
+  p50: 59,
+  p95: 101,
+  mean: 57,
+  sweeps: 3491,
+  ttlSeconds: 20,
+  visibleAfterS: 3,
+  goneAfterS: 19,
+  silencedDriver: "drv-000",
+};
