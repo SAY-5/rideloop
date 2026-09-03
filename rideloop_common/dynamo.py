@@ -46,6 +46,20 @@ def dynamodb_resource(settings: Settings | None = None):
     )
 
 
+def dynamodb_client(settings: Settings | None = None):
+    """Low-level client. Unlike ``resource.meta.client`` it does not auto-convert
+    Python values, so it is the right tool for ``transact_write_items``."""
+    settings = settings or get_settings()
+    return boto3.client(
+        "dynamodb",
+        endpoint_url=settings.dynamodb_endpoint,
+        region_name=settings.aws_region,
+        aws_access_key_id=settings.aws_access_key_id,
+        aws_secret_access_key=settings.aws_secret_access_key,
+        config=Config(max_pool_connections=64, retries={"max_attempts": 3}),
+    )
+
+
 def ensure_table(settings: Settings | None = None) -> str:
     """Create the positions table with its GSI and TTL if it does not exist."""
     settings = settings or get_settings()
@@ -110,6 +124,7 @@ class DriverPositionStore:
         self.resource = resource or dynamodb_resource(self.settings)
         self.table = self.resource.Table(self.settings.driver_positions_table)
         self.client = self.resource.meta.client
+        self.raw_client = dynamodb_client(self.settings)
         self._pool = ThreadPoolExecutor(max_workers=9, thread_name_prefix="cellq")
 
     # -- writes ---------------------------------------------------------------
@@ -181,7 +196,7 @@ class DriverPositionStore:
                 self.table.put_item(Item=item)
                 return _item_to_position(item)
             try:
-                self.client.transact_write_items(
+                self.raw_client.transact_write_items(
                     TransactItems=[
                         {
                             "Delete": {
