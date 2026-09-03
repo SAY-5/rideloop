@@ -72,6 +72,8 @@ class NearbyDriver(DriverPosition):
 
 
 class TripEvent(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     event: str
     at: datetime
 

@@ -112,7 +112,7 @@ def transition(
         trip.completed_at = now
         if trip.driver_id:
             _mirror_driver_status(session, trip.driver_id, "available")
-    session.add(RideEvent(trip_id=trip.id, event=target.value, at=now))
+    trip.events.append(RideEvent(event=target.value, at=now))
     return trip
 
 
