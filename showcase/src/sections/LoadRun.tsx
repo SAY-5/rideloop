@@ -158,9 +158,9 @@ export function LoadRun() {
                   <td>{REAL.p50} / {REAL.p95} ms</td>
                 </tr>
                 <tr>
-                  <th scope="row">position posts</th>
-                  <td>{world.posts.toLocaleString()}</td>
-                  <td>{REAL.positionPosts.toLocaleString()}</td>
+                  <th scope="row">drivers seeded</th>
+                  <td>{world.drivers.length}, pinging every {world.pingIntervalS} s</td>
+                  <td>{REAL.drivers}, {REAL.positionPosts.toLocaleString()} posts</td>
                 </tr>
               </tbody>
             </table>
