@@ -181,6 +181,37 @@
   stroke-width: 3;
 }
 
+.citymap-partition {
+  fill: none;
+  stroke: rgba(200, 241, 53, 0.5);
+  stroke-width: 2.2;
+  stroke-dasharray: 12 8;
+  transition: fill 240ms var(--ease-out), stroke 240ms var(--ease-out);
+}
+
+.citymap-partition.is-block {
+  fill: rgba(127, 215, 255, 0.1);
+  stroke: rgba(127, 215, 255, 0.7);
+  stroke-dasharray: none;
+}
+
+.citymap-partition.is-center {
+  fill: rgba(200, 241, 53, 0.12);
+  stroke: var(--lime);
+}
+
+.citymap-partition-key {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 700;
+  fill: rgba(200, 241, 53, 0.55);
+  letter-spacing: 0.1em;
+}
+
+.citymap-partition-key.is-block {
+  fill: var(--ice);
+}
+
 .citymap-cell-key {
   font-family: var(--font-mono);
   font-size: 15px;

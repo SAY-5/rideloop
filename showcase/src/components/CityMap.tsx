@@ -42,6 +42,10 @@ export interface CellLayer {
 
 interface CityMapProps {
   cells?: CellLayer | null;
+  /** precision-5 partitions to draw as the 3x3 block a query reads */
+  partitionBlock?: string[];
+  /** draw the precision-5 partition boundaries under the interactive layer */
+  partitionOutline?: boolean;
   pins?: MapPin[];
   rings?: MapRing[];
   highlights?: MapHighlight[];
@@ -63,6 +67,8 @@ const TONE: Record<Tone, string> = {
 
 export function CityMap({
   cells,
+  partitionBlock = [],
+  partitionOutline = false,
   pins = [],
   rings = [],
   highlights = [],
@@ -111,6 +117,11 @@ export function CityMap({
     [cells?.precision, cells],
   );
   const blockSet = useMemo(() => new Set(cells?.block ?? []), [cells?.block]);
+  const partitionRects = useMemo(
+    () => (partitionOutline || partitionBlock.length ? visibleCells(5).map((key) => cellRect(key, V)) : []),
+    [partitionOutline, partitionBlock.length],
+  );
+  const partitionBlockSet = useMemo(() => new Set(partitionBlock), [partitionBlock]);
 
   const handleClick = (event: MouseEvent<SVGSVGElement>) => {
     if (!onClick) return;
@@ -164,6 +175,26 @@ export function CityMap({
         aria-label={label}
         onClick={handleClick}
       >
+        {partitionRects.map((c) => {
+          const inBlock = partitionBlockSet.has(c.key);
+          if (!inBlock && !partitionOutline) return null;
+          return (
+            <g key={`p-${c.key}`} pointerEvents="none">
+              <rect
+                x={c.x}
+                y={c.y}
+                width={c.w}
+                height={c.h}
+                className={`citymap-partition${inBlock ? " is-block" : ""}${partitionBlock[0] === c.key ? " is-center" : ""}`}
+              />
+              {(partitionOutline || inBlock) && (
+                <text x={c.x + 12} y={c.y + 30} className={`citymap-partition-key${inBlock ? " is-block" : ""}`}>
+                  {c.key}
+                </text>
+              )}
+            </g>
+          );
+        })}
         {cells &&
           cellRects.map((c) => {
             const selected = cells.selected === c.key;
