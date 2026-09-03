@@ -113,7 +113,7 @@ def transition(
     allowed = {
         TripStatus.EN_ROUTE: {TripStatus.MATCHED},
         TripStatus.COMPLETED: ACTIVE,
-        TripStatus.CANCELLED: ACTIVE - {TripStatus.IN_TRIP} | {TripStatus.REQUESTED},
+        TripStatus.CANCELLED: (ACTIVE - {TripStatus.IN_TRIP}) | {TripStatus.REQUESTED},
     }
     if target not in allowed or trip.status not in allowed[target]:
         raise InvalidTransition(f"cannot move trip {trip.id} from {trip.status.value} to {target}")
