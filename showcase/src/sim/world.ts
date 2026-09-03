@@ -37,6 +37,8 @@ export interface Trip {
   candidatesSeen: number;
   /** manual trips are matched by the UI step by step, not by the sweep loop */
   manual: boolean;
+  /** load trips feed the summary numbers; ambient trips only keep the map alive */
+  source: "load" | "ambient" | "manual";
   events: { event: string; at: number }[];
 }
 
@@ -95,6 +97,9 @@ export class World {
   private nextSweepAt = 0;
   private readonly nextPingAt: number[];
   private readonly scheduled: { at: number; riderId: string }[] = [];
+  /** background requests per second while no load run is queued; keeps the fleet busy */
+  ambientRate = 0.6;
+  private nextAmbientAt = 2;
   private tripSeq = 0;
   private riderSeq = 0;
   private readonly riderRng: Rng;
@@ -130,6 +135,7 @@ export class World {
   /** Queue `rate * durationS` submissions starting now, like sim/riders.py. */
   scheduleLoad(rate: number, durationS: number): number {
     const total = Math.floor(rate * durationS);
+    this.nextAmbientAt = this.now + durationS + 30;
     const gap = 1 / rate;
     for (let i = 0; i < total; i++) {
       this.scheduled.push({
@@ -152,8 +158,9 @@ export class World {
   requestRide(
     pickup: [number, number],
     dropoff: [number, number],
-    options: { manual?: boolean; riderId?: string } = {},
+    options: { manual?: boolean; riderId?: string; source?: Trip["source"] } = {},
   ): Trip {
+    const source = options.source ?? (options.manual ? "manual" : "load");
     const id = `trip-${String(++this.tripSeq).padStart(4, "0")}`;
     const trip: Trip = {
       id,
@@ -174,11 +181,12 @@ export class World {
       radiusM: null,
       candidatesSeen: 0,
       manual: options.manual ?? false,
+      source,
       events: [{ event: "requested", at: this.now }],
     };
     this.trips.set(id, trip);
     this.tripOrder.push(id);
-    if (!trip.manual) this.rate.noteRequest(this.now);
+    if (source === "load") this.rate.noteRequest(this.now);
     this.push({ at: this.now, kind: "request", tripId: id, text: `${id} requested` });
     return trip;
   }
@@ -278,7 +286,7 @@ export class World {
     trip.dispatchAttempts += 1;
     trip.startAt = at + PICKUP_TO_START_S;
     trip.events.push({ event: "matched", at });
-    if (!trip.manual) {
+    if (trip.source === "load") {
       this.latency.push(latencyMs);
       this.rate.noteMatch(at);
     }
@@ -335,13 +343,18 @@ export class World {
     const target = this.now + dtS;
     for (let guard = 0; guard < 10_000; guard++) {
       const nextSubmit = this.scheduled.length ? this.scheduled[0].at : Infinity;
+      const nextAmbient =
+        this.ambientRate > 0 && this.scheduled.length === 0 ? this.nextAmbientAt : Infinity;
       const nextLife = this.nextLifecycleAt();
-      const t = Math.min(nextSubmit, this.nextSweepAt, nextLife);
+      const t = Math.min(nextSubmit, nextAmbient, this.nextSweepAt, nextLife);
       if (t > target) break;
       this.now = Math.max(this.now, t);
       if (t === nextSubmit) {
         const job = this.scheduled.shift()!;
         this.requestRide(randomPoint(this.riderRng), randomPoint(this.riderRng), { riderId: job.riderId });
+      } else if (t === nextAmbient) {
+        this.nextAmbientAt = t + this.noiseRng.uniform(0.4, 1.6) / this.ambientRate;
+        this.requestRide(randomPoint(this.riderRng), randomPoint(this.riderRng), { source: "ambient" });
       } else if (t === nextLife) {
         this.advanceLifecycle(t);
       } else {
@@ -368,7 +381,7 @@ export class World {
     let pending = 0;
     for (const id of this.tripOrder) {
       const trip = this.trips.get(id)!;
-      if (trip.manual) continue;
+      if (trip.source !== "load") continue;
       submitted += 1;
       if (trip.status === "requested") pending += 1;
       else if (trip.status === "completed") {
