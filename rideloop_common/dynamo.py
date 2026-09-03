@@ -16,6 +16,7 @@ read side must filter too), then ranks by haversine distance.
 
 from __future__ import annotations
 
+import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -24,7 +25,7 @@ from typing import Any
 
 import boto3
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, EndpointConnectionError
 
 from rideloop_common import geohash
 from rideloop_common.config import Settings, get_settings
@@ -32,6 +33,7 @@ from rideloop_common.geo import haversine_m, offset_m
 from rideloop_common.models import DriverPosition, DriverStatus, NearbyDriver, utcnow
 
 GSI_BY_DRIVER = "by_driver"
+log = logging.getLogger("rideloop.dynamo")
 
 # Above this many precision-6 subcells a search just reads the whole 3x3 block of
 # precision-5 partitions instead of filtering (DynamoDB's IN operator caps at 100).
@@ -72,33 +74,59 @@ def ensure_table(settings: Settings | None = None) -> str:
     name = settings.driver_positions_table
     existing = client.list_tables()["TableNames"]
     if name not in existing:
-        client.create_table(
-            TableName=name,
-            AttributeDefinitions=[
-                {"AttributeName": "cell", "AttributeType": "S"},
-                {"AttributeName": "driver_id", "AttributeType": "S"},
-            ],
-            KeySchema=[
-                {"AttributeName": "cell", "KeyType": "HASH"},
-                {"AttributeName": "driver_id", "KeyType": "RANGE"},
-            ],
-            GlobalSecondaryIndexes=[
-                {
-                    "IndexName": GSI_BY_DRIVER,
-                    "KeySchema": [{"AttributeName": "driver_id", "KeyType": "HASH"}],
-                    "Projection": {"ProjectionType": "ALL"},
-                }
-            ],
-            BillingMode="PAY_PER_REQUEST",
-        )
+        try:
+            _create_table(client, name)
+        except ClientError as exc:
+            # another worker created it a moment earlier
+            if exc.response["Error"]["Code"] != "ResourceInUseException":
+                raise
         client.get_waiter("table_exists").wait(TableName=name)
     ttl = client.describe_time_to_live(TableName=name)["TimeToLiveDescription"]
     if ttl.get("TimeToLiveStatus") not in ("ENABLED", "ENABLING"):
-        client.update_time_to_live(
-            TableName=name,
-            TimeToLiveSpecification={"Enabled": True, "AttributeName": "ttl"},
-        )
+        try:
+            client.update_time_to_live(
+                TableName=name,
+                TimeToLiveSpecification={"Enabled": True, "AttributeName": "ttl"},
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ValidationException":
+                raise
     return name
+
+
+def ensure_table_with_retry(settings: Settings | None = None, timeout_s: float = 60.0) -> str:
+    """ensure_table, but keep trying while the endpoint is still coming up."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            return ensure_table(settings)
+        except EndpointConnectionError:
+            if time.monotonic() >= deadline:
+                raise
+            log.warning("dynamodb endpoint not reachable yet, retrying")
+            time.sleep(1.0)
+
+
+def _create_table(client, name: str) -> None:
+    client.create_table(
+        TableName=name,
+        AttributeDefinitions=[
+            {"AttributeName": "cell", "AttributeType": "S"},
+            {"AttributeName": "driver_id", "AttributeType": "S"},
+        ],
+        KeySchema=[
+            {"AttributeName": "cell", "KeyType": "HASH"},
+            {"AttributeName": "driver_id", "KeyType": "RANGE"},
+        ],
+        GlobalSecondaryIndexes=[
+            {
+                "IndexName": GSI_BY_DRIVER,
+                "KeySchema": [{"AttributeName": "driver_id", "KeyType": "HASH"}],
+                "Projection": {"ProjectionType": "ALL"},
+            }
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
 
 
 def _to_decimal(value: float) -> Decimal:

@@ -9,7 +9,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException, Query
 
 from rideloop_common.config import get_settings
-from rideloop_common.dynamo import DriverPositionStore, ensure_table
+from rideloop_common.dynamo import DriverPositionStore, ensure_table_with_retry
 from rideloop_common.models import DriverPosition, DriverStatus, NearbyDriver, PositionUpdate
 from services.common import add_common_routes
 
@@ -26,7 +26,7 @@ Store = Annotated[DriverPositionStore, Depends(get_store)]
 async def lifespan(_: FastAPI):
     settings = get_settings()
     if settings.dynamodb_auto_create:
-        ensure_table(settings)
+        ensure_table_with_retry(settings)
     yield
 
 
