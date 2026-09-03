@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { Cells } from "./sections/Cells";
 import { Hero } from "./sections/Hero";
 import { TopBar } from "./sections/TopBar";
 import { formatReport, runSelfCheck } from "./sim/selfcheck";
@@ -26,6 +27,7 @@ export default function App() {
       <TopBar />
       <main>
         <Hero />
+        <Cells />
       </main>
     </WorldProvider>
   );
