@@ -94,7 +94,9 @@ export class World {
   now = 0;
   posts = 0;
   sweeps = 0;
-  private nextSweepAt = 0;
+  nextSweepAt = 0;
+  /** requestedAt of the first trip of the current load run; counts() ignores older trips */
+  loadStartedAt = 0;
   private readonly nextPingAt: number[];
   private readonly scheduled: { at: number; riderId: string }[] = [];
   /** background requests per second while no load run is queued; keeps the fleet busy */
@@ -136,6 +138,9 @@ export class World {
   scheduleLoad(rate: number, durationS: number): number {
     const total = Math.floor(rate * durationS);
     this.nextAmbientAt = this.now + durationS + 30;
+    this.loadStartedAt = this.now;
+    this.latency.reset();
+    this.rate.reset();
     const gap = 1 / rate;
     for (let i = 0; i < total; i++) {
       this.scheduled.push({
@@ -189,6 +194,16 @@ export class World {
     if (source === "load") this.rate.noteRequest(this.now);
     this.push({ at: this.now, kind: "request", tripId: id, text: `${id} requested` });
     return trip;
+  }
+
+  /** Where a manual trip's latency would come from: the wait for the next sweep plus the work. */
+  estimateLatency(outcome: MatchOutcome): { waitMs: number; readsMs: number; claimsMs: number; commitMs: number; totalMs: number } {
+    const waitMs = Math.max(0, this.nextSweepAt - this.now) * 1000 + COST.rowLock;
+    const readsMs = COST.partitionRead * outcome.partitionReads;
+    const claimsMs = COST.claim * outcome.claimAttempts;
+    const commitMs = COST.commit;
+    const totalMs = waitMs + readsMs + claimsMs + commitMs;
+    return { waitMs, readsMs, claimsMs, commitMs, totalMs };
   }
 
   /** Register the outcome of a UI-driven (manual) search on a trip. */
@@ -381,7 +396,7 @@ export class World {
     let pending = 0;
     for (const id of this.tripOrder) {
       const trip = this.trips.get(id)!;
-      if (trip.source !== "load") continue;
+      if (trip.source !== "load" || trip.requestedAt < this.loadStartedAt) continue;
       submitted += 1;
       if (trip.status === "requested") pending += 1;
       else if (trip.status === "completed") {
