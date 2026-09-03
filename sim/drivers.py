@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import logging
 import random
+import threading
 import time
 
 import httpx
@@ -102,6 +103,39 @@ class DriverFleet:
             driver.set_target(*latlng_to_local(trip["pickup_lat"], trip["pickup_lng"]))
         except (httpx.HTTPError, KeyError, ValueError):
             driver.clear_target()
+
+
+class FleetThread:
+    """Run a DriverFleet on its own event loop in a background thread.
+
+    The demo drives riders from the main loop; keeping the fleet's 300 posts per
+    second on a separate loop stops the two workloads from starving each other.
+    """
+
+    def __init__(self, fleet: DriverFleet):
+        self.fleet = fleet
+        self.loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._run, name="driver-fleet", daemon=True)
+        self._started = threading.Event()
+
+    def _run(self) -> None:
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_until_complete(self.fleet.start())
+        self._started.set()
+        self.loop.run_forever()
+
+    def start(self) -> None:
+        self._thread.start()
+        self._started.wait(timeout=30)
+
+    def pause(self, driver_id: str) -> None:
+        self.loop.call_soon_threadsafe(self.fleet.pause, driver_id)
+
+    def stop(self) -> None:
+        future = asyncio.run_coroutine_threadsafe(self.fleet.stop(), self.loop)
+        future.result(timeout=30)
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self._thread.join(timeout=10)
 
 
 async def run(count: int, duration_s: float, interval_s: float) -> None:

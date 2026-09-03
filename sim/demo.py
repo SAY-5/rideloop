@@ -16,7 +16,7 @@ import httpx
 
 from rideloop_common.config import get_settings
 from sim.city import CITY_CENTER
-from sim.drivers import DriverFleet
+from sim.drivers import DriverFleet, FleetThread
 from sim.riders import RiderLoad
 
 MAP_RADIUS_M = 4500.0
@@ -52,6 +52,10 @@ async def visible_drivers(client: httpx.AsyncClient, location_url: str) -> set[s
     return {d["driver_id"] for d in resp.json()}
 
 
+def parse_ts(value: str) -> float:
+    return datetime.fromisoformat(value).timestamp()
+
+
 def percentile(values: list[int], pct: float) -> float:
     if not values:
         return float("nan")
@@ -73,7 +77,8 @@ async def run(drivers: int, rate: float, duration: float) -> int:
 
         print(f"seeding {drivers} drivers...")
         fleet = DriverFleet(loc, ride, drivers)
-        await fleet.start()
+        fleet_thread = FleetThread(fleet)
+        fleet_thread.start()
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             seen = await visible_drivers(client, loc)
@@ -84,7 +89,7 @@ async def run(drivers: int, rate: float, duration: float) -> int:
 
         # TTL evidence: one driver goes quiet; it must vanish once its ttl passes.
         probe = fleet.drivers[0].driver_id
-        fleet.pause(probe)
+        fleet_thread.pause(probe)
         probe_item = (await client.get(f"{loc}/drivers/{probe}")).json()
         stopped_at = time.time()
         ttl_epoch = int(probe_item["ttl"])
@@ -104,15 +109,19 @@ async def run(drivers: int, rate: float, duration: float) -> int:
 
         records = await rider_task
         stats = (await client.get(f"{dispatch}/dispatch/stats")).json()
-        await fleet.stop()
+        # read the final state of every trip so the summary uses server timestamps
+        for record in records:
+            if not record.trip:
+                record.trip = (await client.get(f"{ride}/rides/{record.trip_id}")).json()
+        fleet_thread.stop()
 
-    matched = [r for r in records if r.matched_at is not None]
-    latencies = [r.match_latency_ms for r in matched if r.match_latency_ms is not None]
-    completed = sum(1 for r in records if r.final_status == "completed")
+    matched = [r for r in records if r.trip.get("matched_at")]
+    latencies = [r.trip["match_latency_ms"] for r in matched]
+    completed = sum(1 for r in records if r.trip.get("status") == "completed")
     if matched:
-        first_submit = min(r.submitted_at for r in records)
-        last_match = max(r.matched_at for r in matched)
-        window_s = max(last_match - first_submit, 1e-6)
+        first_request = min(parse_ts(r.trip["requested_at"]) for r in records)
+        last_match = max(parse_ts(r.trip["matched_at"]) for r in matched)
+        window_s = max(last_match - first_request, 1e-6)
         per_minute = len(matched) / (window_s / 60)
     else:
         window_s = 0.0
@@ -129,7 +138,10 @@ async def run(drivers: int, rate: float, duration: float) -> int:
     print(f"rides matched             {len(matched)} ({len(matched) / max(len(records), 1):.1%})")
     print(f"rides completed           {completed}")
     print(f"rides left requested      {len(records) - len(matched)}")
-    print(f"matches per minute        {per_minute:.0f} (over {window_s:.1f}s)")
+    print(
+        f"matches per minute        {per_minute:.0f} "
+        f"({len(matched)} matches over {window_s:.1f}s, first request to last match)"
+    )
     if latencies:
         print(
             f"match latency p50 / p95   {percentile(latencies, 50):.0f} ms / "

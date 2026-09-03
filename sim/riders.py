@@ -30,6 +30,7 @@ class RideRecord:
     driver_id: str | None = None
     final_status: str = "requested"
     events: list[str] = field(default_factory=list)
+    trip: dict = field(default_factory=dict)
 
 
 class RiderLoad:
@@ -81,7 +82,7 @@ class RiderLoad:
     async def _follow(self, client: httpx.AsyncClient, record: RideRecord) -> None:
         deadline = time.monotonic() + MATCH_TIMEOUT_S
         while time.monotonic() < deadline:
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1.0)
             try:
                 trip = (await client.get(f"{self.ride_url}/rides/{record.trip_id}")).json()
             except (httpx.HTTPError, ValueError):
@@ -101,6 +102,7 @@ class RiderLoad:
         if trip is not None:
             record.final_status = trip["status"]
             record.events = [e["event"] for e in trip.get("events", [])]
+            record.trip = trip
 
     async def _post(self, client: httpx.AsyncClient, record: RideRecord, action: str):
         try:
