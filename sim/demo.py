@@ -39,16 +39,20 @@ async def wait_healthy(client: httpx.AsyncClient, urls: list[str], timeout_s: fl
 
 
 async def visible_drivers(client: httpx.AsyncClient, location_url: str) -> set[str]:
-    resp = await client.get(
-        f"{location_url}/drivers/nearby",
-        params={
-            "lat": CITY_CENTER[0],
-            "lng": CITY_CENTER[1],
-            "radius_m": MAP_RADIUS_M,
-            "limit": 1000,
-        },
-    )
-    resp.raise_for_status()
+    """Drivers currently visible near the city center; a slow or failed query counts as none yet."""
+    try:
+        resp = await client.get(
+            f"{location_url}/drivers/nearby",
+            params={
+                "lat": CITY_CENTER[0],
+                "lng": CITY_CENTER[1],
+                "radius_m": MAP_RADIUS_M,
+                "limit": 1000,
+            },
+        )
+        resp.raise_for_status()
+    except httpx.HTTPError:
+        return set()
     return {d["driver_id"] for d in resp.json()}
 
 
@@ -71,7 +75,7 @@ async def run(drivers: int, rate: float, duration: float) -> int:
         settings.ride_request_url,
         settings.dispatch_url,
     )
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=30.0) as client:
         print("waiting for services...")
         await wait_healthy(client, [loc, ride, dispatch])
 
