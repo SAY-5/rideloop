@@ -22,3 +22,14 @@ def offset_m(lat: float, lng: float, north_m: float, east_m: float) -> tuple[flo
     dlat = north_m / EARTH_RADIUS_M
     dlng = east_m / (EARTH_RADIUS_M * math.cos(math.radians(lat)))
     return lat + math.degrees(dlat), lng + math.degrees(dlng)
+
+
+def manhattan_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """North-south plus east-west distance in meters.
+
+    A driver on a street grid cannot drive the great-circle line, so the L1
+    distance is a better stand-in for route length than haversine at city scale.
+    """
+    north = haversine_m(lat1, lng1, lat2, lng1)
+    east = haversine_m(lat1, lng1, lat1, lng2)
+    return north + east
