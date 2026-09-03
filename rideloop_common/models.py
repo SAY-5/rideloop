@@ -17,6 +17,8 @@ class TripStatus(StrEnum):
     REQUESTED = "requested"
     MATCHED = "matched"
     EN_ROUTE = "en_route"
+    ARRIVED = "arrived"
+    IN_TRIP = "in_trip"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
 
@@ -63,6 +65,7 @@ class DriverPosition(BaseModel):
     heading: float = 0.0
     status: DriverStatus = DriverStatus.AVAILABLE
     trip_id: str | None = None
+    speed_mps: float = 0.0
     updated_at: datetime
     ttl: int
 
@@ -91,13 +94,28 @@ class Trip(BaseModel):
     driver_id: str | None = None
     requested_at: datetime
     matched_at: datetime | None = None
+    arrived_at: datetime | None = None
+    started_at: datetime | None = None
     completed_at: datetime | None = None
     match_latency_ms: int | None = None
+    pickup_eta_s: int | None = None
     dispatch_attempts: int = 0
+
+
+class DriverLocation(BaseModel):
+    """Where the assigned driver is right now, as reported by the location service."""
+
+    lat: float
+    lng: float
+    heading: float
+    speed_mps: float
+    distance_to_pickup_m: float
+    updated_at: datetime
 
 
 class TripDetail(Trip):
     events: list[TripEvent] = Field(default_factory=list)
+    driver_position: DriverLocation | None = None
 
 
 class DispatchStats(BaseModel):
