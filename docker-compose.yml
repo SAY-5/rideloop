@@ -1,0 +1,65 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: rideloop
+      POSTGRES_PASSWORD: rideloop
+      POSTGRES_DB: rideloop
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rideloop"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  dynamodb:
+    image: amazon/dynamodb-local:2.5.2
+    command: ["-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb"]
+    ports:
+      - "${DYNAMODB_HOST_PORT:-8000}:8000"
+
+  driver_location:
+    build:
+      context: .
+      dockerfile: services/driver_location/Dockerfile
+    environment: &service_env
+      DYNAMODB_ENDPOINT: http://dynamodb:8000
+      DATABASE_URL: postgresql+psycopg://rideloop:rideloop@postgres:5432/rideloop
+      POSITION_TTL_SECONDS: ${POSITION_TTL_SECONDS:-20}
+    ports:
+      - "8001:8000"
+    depends_on:
+      dynamodb:
+        condition: service_started
+    healthcheck: &service_health
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  ride_request:
+    build:
+      context: .
+      dockerfile: services/ride_request/Dockerfile
+    environment: *service_env
+    ports:
+      - "8002:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      driver_location:
+        condition: service_healthy
+    healthcheck: *service_health
+
+  dispatch:
+    build:
+      context: .
+      dockerfile: services/dispatch/Dockerfile
+    environment: *service_env
+    ports:
+      - "8003:8000"
+    depends_on:
+      ride_request:
+        condition: service_healthy
+    healthcheck: *service_health
