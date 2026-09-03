@@ -204,12 +204,10 @@ export function formatReport(report: SelfCheckReport): string {
 }
 
 // `npm run selfcheck` entry point (tsx); the browser imports runSelfCheck instead.
-const isNodeMain =
-  typeof process !== "undefined" &&
-  Array.isArray(process.argv) &&
-  /selfcheck\.ts$/.test(process.argv[1] ?? "");
-if (isNodeMain) {
+const nodeProcess = (globalThis as { process?: { argv?: string[]; exit?: (code: number) => void } })
+  .process;
+if (nodeProcess?.argv && /selfcheck\.ts$/.test(nodeProcess.argv[1] ?? "")) {
   const report = runSelfCheck();
   console.log(formatReport(report));
-  process.exit(report.ok ? 0 : 1);
+  nodeProcess.exit?.(report.ok ? 0 : 1);
 }

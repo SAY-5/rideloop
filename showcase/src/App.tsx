@@ -1,13 +1,32 @@
+import { useEffect } from "react";
+import { Hero } from "./sections/Hero";
+import { TopBar } from "./sections/TopBar";
+import { formatReport, runSelfCheck } from "./sim/selfcheck";
+import { WorldProvider } from "./sim/WorldProvider";
+import "./styles/app.css";
+
+function useStartupSelfCheck() {
+  useEffect(() => {
+    const run = () => {
+      const report = runSelfCheck();
+      const style = report.ok ? "color:#c8f135" : "color:#ff6b7a";
+      console.info("%cRideLoop showcase self-check", style);
+      console.info(formatReport(report));
+    };
+    const idle = (window as Window & { requestIdleCallback?: (cb: () => void) => number }).requestIdleCallback;
+    if (idle) idle(run);
+    else setTimeout(run, 800);
+  }, []);
+}
+
 export default function App() {
+  useStartupSelfCheck();
   return (
-    <main>
-      <section className="section">
-        <div className="wrap">
-          <span className="eyebrow">RideLoop dispatch</span>
-          <h1 className="title">Five hundred rides a minute, matched.</h1>
-          <p className="lede">Browser port of the dispatch path. Scaffold.</p>
-        </div>
-      </section>
-    </main>
+    <WorldProvider>
+      <TopBar />
+      <main>
+        <Hero />
+      </main>
+    </WorldProvider>
   );
 }
