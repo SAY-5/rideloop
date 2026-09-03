@@ -1,4 +1,4 @@
-.PHONY: setup lint test test-db migrate tables demo demo-down web
+.PHONY: setup lint test test-db migrate tables demo demo-down web web-build
 
 UV ?= uv
 TEST_PG_PORT ?= 5434
@@ -40,3 +40,6 @@ demo-down:
 
 web:
 	cd web && pnpm dev
+
+web-build:
+	cd web && pnpm build
