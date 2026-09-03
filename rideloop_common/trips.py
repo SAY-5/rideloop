@@ -9,7 +9,19 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from rideloop_common.db import Driver, RideEvent, Trip
+from rideloop_common.eta import eta_to_point
+from rideloop_common.geo import manhattan_m
 from rideloop_common.models import RideRequest, TripStatus
+
+# Within this route distance of the pickup or dropoff the driver counts as there.
+ARRIVAL_RADIUS_M = 40.0
+# Once an arrived driver is this far from the pickup again the rider is aboard.
+DEPART_RADIUS_M = 120.0
+
+# States in which the driver is still on the way to the rider.
+APPROACHING = {TripStatus.MATCHED, TripStatus.EN_ROUTE}
+# States in which a driver is assigned and the trip is not over.
+ACTIVE = {TripStatus.MATCHED, TripStatus.EN_ROUTE, TripStatus.ARRIVED, TripStatus.IN_TRIP}
 
 
 class TripNotFound(LookupError):
@@ -100,18 +112,67 @@ def transition(
     now = now or datetime.now(UTC)
     allowed = {
         TripStatus.EN_ROUTE: {TripStatus.MATCHED},
-        TripStatus.COMPLETED: {TripStatus.MATCHED, TripStatus.EN_ROUTE},
-        TripStatus.CANCELLED: {TripStatus.REQUESTED, TripStatus.MATCHED, TripStatus.EN_ROUTE},
+        TripStatus.COMPLETED: ACTIVE,
+        TripStatus.CANCELLED: ACTIVE - {TripStatus.IN_TRIP} | {TripStatus.REQUESTED},
     }
     if target not in allowed or trip.status not in allowed[target]:
         raise InvalidTransition(f"cannot move trip {trip.id} from {trip.status.value} to {target}")
+    _set_status(session, trip, target, now)
+    return trip
+
+
+def _set_status(session: Session, trip: Trip, target: TripStatus, now: datetime) -> None:
     trip.status = target
-    if target in (TripStatus.COMPLETED, TripStatus.CANCELLED):
+    if target == TripStatus.ARRIVED:
+        trip.arrived_at = now
+        trip.pickup_eta_s = 0
+    elif target == TripStatus.IN_TRIP:
+        trip.started_at = now
+    elif target in (TripStatus.COMPLETED, TripStatus.CANCELLED):
         trip.completed_at = now
         if trip.driver_id:
             _mirror_driver_status(session, trip.driver_id, "available")
     trip.events.append(RideEvent(event=target.value, at=now))
-    return trip
+
+
+def advance_from_position(
+    session: Session,
+    trip: Trip,
+    lat: float,
+    lng: float,
+    speed_mps: float,
+    now: datetime | None = None,
+) -> TripStatus | None:
+    """Move the trip along from where its driver just reported being.
+
+    matched -> en_route on the first ping after the match, en_route -> arrived
+    inside ARRIVAL_RADIUS_M of the pickup, arrived -> in_trip once the car has
+    pulled DEPART_RADIUS_M away from it, in_trip -> completed inside
+    ARRIVAL_RADIUS_M of the dropoff. Returns the new status, or None if the
+    ping did not change anything. The pickup ETA is refreshed while approaching.
+    """
+    now = now or datetime.now(UTC)
+    to_pickup = manhattan_m(lat, lng, trip.pickup_lat, trip.pickup_lng)
+    to_dropoff = manhattan_m(lat, lng, trip.dropoff_lat, trip.dropoff_lng)
+    target: TripStatus | None = None
+    if trip.status == TripStatus.MATCHED:
+        target = TripStatus.ARRIVED if to_pickup <= ARRIVAL_RADIUS_M else TripStatus.EN_ROUTE
+    elif trip.status == TripStatus.EN_ROUTE and to_pickup <= ARRIVAL_RADIUS_M:
+        target = TripStatus.ARRIVED
+    elif trip.status == TripStatus.ARRIVED and to_pickup >= DEPART_RADIUS_M:
+        target = TripStatus.IN_TRIP
+    elif trip.status == TripStatus.IN_TRIP and to_dropoff <= ARRIVAL_RADIUS_M:
+        target = TripStatus.COMPLETED
+
+    if target is TripStatus.EN_ROUTE or (target is None and trip.status in APPROACHING):
+        _, trip.pickup_eta_s = eta_to_point(lat, lng, trip.pickup_lat, trip.pickup_lng, speed_mps)
+    if target is None:
+        return None
+    if target == TripStatus.ARRIVED and trip.status == TripStatus.MATCHED:
+        # a driver that was already at the pickup skips straight past en_route
+        _set_status(session, trip, TripStatus.EN_ROUTE, now)
+    _set_status(session, trip, target, now)
+    return target
 
 
 def _mirror_driver_status(session: Session, driver_id: str, status: str) -> None:

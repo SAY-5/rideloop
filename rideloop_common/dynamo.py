@@ -39,6 +39,11 @@ log = logging.getLogger("rideloop.dynamo")
 # precision-5 partitions instead of filtering (DynamoDB's IN operator caps at 100).
 MAX_SUBCELL_FILTER = 64
 
+# Speed is smoothed across pings so one late packet does not swing the ETA;
+# anything faster than this between two pings is a jump, not driving.
+SPEED_SMOOTHING = 0.5
+MAX_SPEED_MPS = 50.0
+
 
 def dynamodb_resource(settings: Settings | None = None):
     settings = settings or get_settings()
@@ -143,9 +148,23 @@ def _item_to_position(item: dict[str, Any]) -> DriverPosition:
         heading=float(item.get("heading", 0)),
         status=DriverStatus(item.get("status", "available")),
         trip_id=item.get("trip_id"),
+        speed_mps=float(item.get("speed_mps", 0)),
         updated_at=datetime.fromisoformat(item["updated_at"]),
         ttl=int(item["ttl"]),
     )
+
+
+def observed_speed(previous: DriverPosition | None, lat: float, lng: float, now: datetime) -> float:
+    """Smoothed ground speed from the last stored position to this one."""
+    if previous is None:
+        return 0.0
+    elapsed = (now - previous.updated_at).total_seconds()
+    if elapsed <= 0:
+        return previous.speed_mps
+    instant = min(haversine_m(previous.lat, previous.lng, lat, lng) / elapsed, MAX_SPEED_MPS)
+    if previous.speed_mps == 0:
+        return round(instant, 2)
+    return round(SPEED_SMOOTHING * previous.speed_mps + (1 - SPEED_SMOOTHING) * instant, 2)
 
 
 class DriverPositionStore:
@@ -180,22 +199,24 @@ class DriverPositionStore:
         ttl_seconds = ttl_seconds or self.settings.position_ttl_seconds
         cell = geohash.encode(lat, lng, self.settings.cell_precision)
         full_hash = geohash.encode(lat, lng, geohash.DEFAULT_PRECISION)
-        base = {
-            "geohash": full_hash,
-            "lat": _to_decimal(lat),
-            "lng": _to_decimal(lng),
-            "heading": _to_decimal(heading),
-            "updated_at": now.isoformat(),
-            "ttl": int(now.timestamp()) + ttl_seconds,
-        }
         for _ in range(3):
             current = self.get_driver(driver_id)
+            speed = observed_speed(current, lat, lng, now)
+            base = {
+                "geohash": full_hash,
+                "lat": _to_decimal(lat),
+                "lng": _to_decimal(lng),
+                "heading": _to_decimal(heading),
+                "speed_mps": _to_decimal(speed),
+                "updated_at": now.isoformat(),
+                "ttl": int(now.timestamp()) + ttl_seconds,
+            }
             if current is not None and current.cell == cell:
                 self.table.update_item(
                     Key={"cell": cell, "driver_id": driver_id},
                     UpdateExpression=(
                         "SET geohash = :g, lat = :lat, lng = :lng, heading = :h, "
-                        "updated_at = :u, #ttl = :ttl"
+                        "speed_mps = :sp, updated_at = :u, #ttl = :ttl"
                     ),
                     ExpressionAttributeNames={"#ttl": "ttl"},
                     ExpressionAttributeValues={
@@ -203,6 +224,7 @@ class DriverPositionStore:
                         ":lat": base["lat"],
                         ":lng": base["lng"],
                         ":h": base["heading"],
+                        ":sp": base["speed_mps"],
                         ":u": base["updated_at"],
                         ":ttl": base["ttl"],
                     },
@@ -212,7 +234,14 @@ class DriverPositionStore:
                     cell=cell,
                     status=current.status,
                     trip_id=current.trip_id,
-                    **{**base, "lat": lat, "lng": lng, "heading": heading, "updated_at": now},
+                    **{
+                        **base,
+                        "lat": lat,
+                        "lng": lng,
+                        "heading": heading,
+                        "speed_mps": speed,
+                        "updated_at": now,
+                    },
                 )
 
             status = current.status if current else DriverStatus.AVAILABLE
