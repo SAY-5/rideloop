@@ -41,9 +41,7 @@ def create_trip(session: Session, request: RideRequest, now: datetime | None = N
 
 
 def get_trip(session: Session, trip_id: uuid.UUID) -> Trip:
-    trip = session.scalar(
-        select(Trip).options(selectinload(Trip.events)).where(Trip.id == trip_id)
-    )
+    trip = session.scalar(select(Trip).options(selectinload(Trip.events)).where(Trip.id == trip_id))
     if trip is None:
         raise TripNotFound(f"trip {trip_id} not found")
     return trip
@@ -150,4 +148,3 @@ def match_stats(session: Session, window: timedelta = timedelta(minutes=1)) -> d
         "p50_match_latency_ms": float(p50) if p50 is not None else None,
         "p95_match_latency_ms": float(p95) if p95 is not None else None,
     }
-

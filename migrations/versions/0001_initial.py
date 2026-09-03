@@ -78,9 +78,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("event", sa.String(32), nullable=False),
-        sa.Column(
-            "at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
-        ),
+        sa.Column("at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
     )
     op.create_index("ix_ride_events_trip_id", "ride_events", ["trip_id"])
 

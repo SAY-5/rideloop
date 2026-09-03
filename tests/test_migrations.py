@@ -30,12 +30,16 @@ def test_upgrade_creates_schema(migrated_engine):
     assert fks[0]["options"].get("ondelete") == "CASCADE"
 
     with migrated_engine.connect() as conn:
-        labels = conn.execute(
-            text(
-                "SELECT enumlabel FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid "
-                "WHERE t.typname = 'trip_status' ORDER BY enumsortorder"
+        labels = (
+            conn.execute(
+                text(
+                    "SELECT enumlabel FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid "
+                    "WHERE t.typname = 'trip_status' ORDER BY enumsortorder"
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert labels == ["requested", "matched", "en_route", "completed", "cancelled"]
 
 
@@ -45,8 +49,11 @@ def test_downgrade_and_upgrade_are_clean(migrated_engine):
     insp = inspect(migrated_engine)
     assert "trips" not in insp.get_table_names()
     with migrated_engine.connect() as conn:
-        assert conn.execute(
-            text("SELECT count(*) FROM pg_type WHERE typname = 'trip_status'")
-        ).scalar() == 0
+        assert (
+            conn.execute(
+                text("SELECT count(*) FROM pg_type WHERE typname = 'trip_status'")
+            ).scalar()
+            == 0
+        )
     command.upgrade(cfg, "head")
     assert "trips" in inspect(migrated_engine).get_table_names()

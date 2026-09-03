@@ -28,10 +28,14 @@ from botocore.exceptions import ClientError
 
 from rideloop_common import geohash
 from rideloop_common.config import Settings, get_settings
-from rideloop_common.geo import haversine_m
+from rideloop_common.geo import haversine_m, offset_m
 from rideloop_common.models import DriverPosition, DriverStatus, NearbyDriver, utcnow
 
 GSI_BY_DRIVER = "by_driver"
+
+# Above this many precision-6 subcells a search just reads the whole 3x3 block of
+# precision-5 partitions instead of filtering (DynamoDB's IN operator caps at 100).
+MAX_SUBCELL_FILTER = 64
 
 
 def dynamodb_resource(settings: Settings | None = None):
@@ -287,13 +291,27 @@ class DriverPositionStore:
         newest = max(items, key=lambda it: it["updated_at"])
         return _item_to_position(newest)
 
-    def _query_cell(self, cell: str, now_epoch: int) -> list[dict[str, Any]]:
+    def _query_cell(
+        self, cell: str, now_epoch: int, subcells: list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """Read one partition, dropping expired rows and (optionally) rows outside
+        the precision-6 subcells that intersect the search area."""
         items: list[dict[str, Any]] = []
+        names = {"#c": "cell", "#ttl": "ttl"}
+        values: dict[str, Any] = {":c": cell, ":now": now_epoch}
+        filter_expr = "#ttl > :now"
+        if subcells:
+            placeholders = []
+            for i, sub in enumerate(subcells):
+                values[f":g{i}"] = sub
+                placeholders.append(f":g{i}")
+            names["#g"] = "geohash"
+            filter_expr += f" AND #g IN ({', '.join(placeholders)})"
         kwargs: dict[str, Any] = {
             "KeyConditionExpression": "#c = :c",
-            "FilterExpression": "#ttl > :now",
-            "ExpressionAttributeNames": {"#c": "cell", "#ttl": "ttl"},
-            "ExpressionAttributeValues": {":c": cell, ":now": now_epoch},
+            "FilterExpression": filter_expr,
+            "ExpressionAttributeNames": names,
+            "ExpressionAttributeValues": values,
         }
         while True:
             resp = self.table.query(**kwargs)
@@ -302,6 +320,47 @@ class DriverPositionStore:
             if not last:
                 return items
             kwargs["ExclusiveStartKey"] = last
+
+    def _query_plan(
+        self, lat: float, lng: float, radius_m: float
+    ) -> list[tuple[str, list[str] | None]]:
+        """Decide which partitions to read and which subcells to keep.
+
+        Small radii: enumerate the precision-6 cells covering the search box and
+        group them by their precision-5 parent, so each partition query only
+        returns rows inside the box. Large radii: read the 3x3 block of
+        precision-5 partitions with no subcell filter.
+        """
+        precision = self.settings.cell_precision
+        fine = precision + 1
+        lat_lo, lng_lo = offset_m(lat, lng, -radius_m, -radius_m)
+        lat_hi, lng_hi = offset_m(lat, lng, radius_m, radius_m)
+        _, cell_lat_hi, _, cell_lng_hi = geohash.decode_bbox(geohash.encode(lat, lng, fine))
+        cell_lat_lo, _, cell_lng_lo, _ = geohash.decode_bbox(geohash.encode(lat, lng, fine))
+        step_lat = (cell_lat_hi - cell_lat_lo) * 0.999
+        step_lng = (cell_lng_hi - cell_lng_lo) * 0.999
+
+        subcells: list[str] = []
+        seen: set[str] = set()
+        y = lat_lo
+        while y <= lat_hi + step_lat:
+            x = lng_lo
+            while x <= lng_hi + step_lng:
+                sub = geohash.encode(max(-90.0, min(90.0, y)), max(-180.0, min(180.0, x)), fine)
+                if sub not in seen:
+                    seen.add(sub)
+                    subcells.append(sub)
+                x += step_lng
+            y += step_lat
+
+        if len(subcells) > MAX_SUBCELL_FILTER:
+            center = geohash.encode(lat, lng, precision)
+            return [(c, None) for c in geohash.cell_with_neighbors(center)]
+
+        grouped: dict[str, list[str]] = {}
+        for sub in subcells:
+            grouped.setdefault(sub[:precision], []).append(sub)
+        return [(parent, subs) for parent, subs in grouped.items()]
 
     def nearby(
         self,
@@ -314,9 +373,10 @@ class DriverPositionStore:
     ) -> list[NearbyDriver]:
         """Drivers within ``radius_m`` of a point, nearest first, expired items excluded."""
         now_epoch = int((now or datetime.now(UTC)).timestamp())
-        center = geohash.encode(lat, lng, self.settings.cell_precision)
-        cells = geohash.cell_with_neighbors(center)
-        results = list(self._pool.map(lambda c: self._query_cell(c, now_epoch), cells))
+        plan = self._query_plan(lat, lng, radius_m)
+        results = list(
+            self._pool.map(lambda entry: self._query_cell(entry[0], now_epoch, entry[1]), plan)
+        )
 
         latest: dict[str, dict[str, Any]] = {}
         for items in results:

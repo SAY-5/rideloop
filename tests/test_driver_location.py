@@ -131,9 +131,7 @@ def test_status_endpoints(store):
         "offline"
     )
     assert (
-        client.get(
-            "/drivers/nearby", params={"lat": lat, "lng": lng, "status": "available"}
-        ).json()
+        client.get("/drivers/nearby", params={"lat": lat, "lng": lng, "status": "available"}).json()
         == []
     )
     assert client.get("/drivers/d1").status_code == 200
