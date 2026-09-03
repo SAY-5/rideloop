@@ -22,6 +22,9 @@ def test_upgrade_creates_schema(migrated_engine):
         "matched_at",
         "completed_at",
         "match_latency_ms",
+        "arrived_at",
+        "started_at",
+        "pickup_eta_s",
     }
     indexes = {i["name"] for i in insp.get_indexes("trips")}
     assert {"ix_trips_status", "ix_trips_requested_at"} <= indexes
@@ -40,7 +43,56 @@ def test_upgrade_creates_schema(migrated_engine):
             .scalars()
             .all()
         )
-    assert labels == ["requested", "matched", "en_route", "completed", "cancelled"]
+    assert labels == [
+        "requested",
+        "matched",
+        "en_route",
+        "arrived",
+        "in_trip",
+        "completed",
+        "cancelled",
+    ]
+
+
+def enum_labels(engine) -> list[str]:
+    with engine.connect() as conn:
+        return (
+            conn.execute(
+                text(
+                    "SELECT enumlabel FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid "
+                    "WHERE t.typname = 'trip_status' ORDER BY enumsortorder"
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+def test_downgrade_to_0001_rebuilds_the_enum_without_progress_states(migrated_engine):
+    cfg = alembic_config()
+    with migrated_engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO trips (id, rider_id, pickup_lat, pickup_lng, dropoff_lat, "
+                "dropoff_lng, status) VALUES (gen_random_uuid(), 'r', 0, 0, 0, 0, 'in_trip')"
+            )
+        )
+    command.downgrade(cfg, "0001")
+    assert enum_labels(migrated_engine) == [
+        "requested",
+        "matched",
+        "en_route",
+        "completed",
+        "cancelled",
+    ]
+    cols = {c["name"] for c in inspect(migrated_engine).get_columns("trips")}
+    assert "arrived_at" not in cols and "pickup_eta_s" not in cols
+    with migrated_engine.connect() as conn:
+        assert conn.execute(text("SELECT status::text FROM trips")).scalar() == "en_route"
+    command.upgrade(cfg, "head")
+    assert "in_trip" in enum_labels(migrated_engine)
+    with migrated_engine.begin() as conn:
+        conn.execute(text("DELETE FROM trips"))
 
 
 def test_downgrade_and_upgrade_are_clean(migrated_engine):

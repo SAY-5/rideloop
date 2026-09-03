@@ -52,6 +52,8 @@ def test_trip_status_values():
         "requested",
         "matched",
         "en_route",
+        "arrived",
+        "in_trip",
         "completed",
         "cancelled",
     ]
