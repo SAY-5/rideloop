@@ -25,9 +25,15 @@ def test_upgrade_creates_schema(migrated_engine):
         "arrived_at",
         "started_at",
         "pickup_eta_s",
+        "pickup_cell",
+        "surge_multiplier",
     }
     indexes = {i["name"] for i in insp.get_indexes("trips")}
-    assert {"ix_trips_status", "ix_trips_requested_at"} <= indexes
+    assert {
+        "ix_trips_status",
+        "ix_trips_requested_at",
+        "ix_trips_pickup_cell_requested_at",
+    } <= indexes
     fks = insp.get_foreign_keys("ride_events")
     assert fks[0]["referred_table"] == "trips"
     assert fks[0]["options"].get("ondelete") == "CASCADE"
@@ -71,12 +77,16 @@ def enum_labels(engine) -> list[str]:
 def test_downgrade_to_0001_rebuilds_the_enum_without_progress_states(migrated_engine):
     cfg = alembic_config()
     with migrated_engine.begin() as conn:
+        conn.execute(text("DELETE FROM trips"))
         conn.execute(
             text(
                 "INSERT INTO trips (id, rider_id, pickup_lat, pickup_lng, dropoff_lat, "
                 "dropoff_lng, status) VALUES (gen_random_uuid(), 'r', 0, 0, 0, 0, 'in_trip')"
             )
         )
+    command.downgrade(cfg, "0002")
+    cols = {c["name"] for c in inspect(migrated_engine).get_columns("trips")}
+    assert "surge_multiplier" not in cols and "pickup_cell" not in cols
     command.downgrade(cfg, "0001")
     assert enum_labels(migrated_engine) == [
         "requested",

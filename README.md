@@ -9,7 +9,7 @@ on a laptop.
 | --- | --- | --- | --- |
 | `driver_location` | 8001 | DynamoDB, PostgreSQL | ingest driver pings, answer "who is near this point", move a busy driver's trip along |
 | `ride_request` | 8002 | PostgreSQL, DynamoDB | create trips, expose their lifecycle with the driver's position and pickup ETA, release drivers on completion |
-| `dispatch` | 8003 | PostgreSQL, DynamoDB | match requested trips to the nearest available driver, report throughput |
+| `dispatch` | 8003 | PostgreSQL, DynamoDB | match requested trips to the nearest available driver, report throughput and the surge heatmap |
 | `web` | 5173 | | rider map: drivers, pickup pin, request, matched driver approaching |
 
 ```
@@ -94,8 +94,10 @@ status, the matcher's nearest-first choice and expanding-radius fallback,
 conditional claims under concurrent matchers, the trip lifecycle with its event
 trail, the position-driven en_route / arrived / in_trip / completed
 progression, the pickup ETA against a simulated grid drive (within 15%),
-migrations up and down including the enum rebuild, and an in-process run of
-500 trips that must sustain at least 500 matches per minute. CI (`.github/workflows/ci.yml`) runs
+migrations up and down including the enum rebuild, the surge multiplier
+climbing over a burst of requests in one cell and cooling off with the
+half-life, the heatmap ordering, and an in-process run of 500 trips that must
+sustain at least 500 matches per minute. CI (`.github/workflows/ci.yml`) runs
 the same steps with a `postgres:16` service container and a separate job for
 the web app.
 
@@ -111,6 +113,7 @@ the web app.
 | `DISPATCH_INITIAL_RADIUS_M` / `DISPATCH_MAX_RADIUS_M` | `500` / `4000` | dispatch |
 | `DISPATCH_RETRY_DELAY_S` | `1.0` | dispatch |
 | `DISPATCH_POLL_INTERVAL_S` | `0.1` | dispatch |
+| `SURGE_HALF_LIFE_S` / `SURGE_STEP` / `SURGE_MAX_MULTIPLIER` | `60` / `0.5` / `3.0` | ride_request, dispatch |
 | `DRIVER_LOCATION_URL` / `RIDE_REQUEST_URL` / `DISPATCH_URL` | `http://localhost:800{1,2,3}` | simulators |
 
 ## API
@@ -129,7 +132,8 @@ the web app.
 
 | method | path | notes |
 | --- | --- | --- |
-| `POST` | `/rides` | body `{rider_id, pickup: {lat, lng}, dropoff: {lat, lng}}`; returns the trip with status `requested` |
+| `POST` | `/rides` | body `{rider_id, pickup: {lat, lng}, dropoff: {lat, lng}}`; returns the trip with status `requested`, its `pickup_cell` and the `surge_multiplier` it was priced at |
+| `GET` | `/rides/surge?lat&lng` | the cell a pickup at this point falls in with its current `demand`, `supply` and `multiplier` |
 | `GET` | `/rides/{id}` | trip with its `events`, plus `driver_position` (lat, lng, heading, speed_mps, distance_to_pickup_m, updated_at) and `pickup_eta_s` while a driver is assigned |
 | `GET` | `/rides?status&limit` | recent trips (no driver position lookup) |
 | `POST` | `/rides/{id}/start` | `matched` to `en_route` (rider-side shortcut; pings do this on their own) |
@@ -157,6 +161,16 @@ ETA.
 | method | path | notes |
 | --- | --- | --- |
 | `GET` | `/dispatch/stats` | `matched_total`, `pending`, `matches_last_minute`, `matches_per_minute`, `p50_match_latency_ms`, `p95_match_latency_ms`, `sweeps`, `uptime_s` |
+| `GET` | `/dispatch/heatmap` | every cell with recent demand or available drivers: `cell`, `lat`, `lng`, `demand`, `supply`, `multiplier`, hottest first |
+
+Surge pricing works per precision-5 cell. Demand is the sum of recent ride
+requests whose pickup is in the cell, each weighted by `0.5 ^ (age /
+SURGE_HALF_LIFE_S)`, so a burst pushes the number up and it halves every
+minute on its own. Supply is the count of available, unexpired drivers in the
+cell. The multiplier is 1.0 while demand does not exceed supply and otherwise
+`1 + SURGE_STEP * (demand / supply - 1)`, capped at `SURGE_MAX_MULTIPLIER`.
+Nothing is counted incrementally: both numbers are read from the stores at
+request time.
 
 All three expose `GET /healthz` and interactive docs at `/docs`.
 
@@ -167,14 +181,15 @@ key `driver_id`, attributes `geohash` (precision 6), `lat`, `lng`, `heading`,
 `speed_mps`, `status`, `trip_id`, `updated_at`, `ttl` (TTL attribute), GSI
 `by_driver`.
 
-PostgreSQL (Alembic revisions `0001`, `0002`):
+PostgreSQL (Alembic revisions `0001` to `0003`):
 
 ```
 trips        id uuid pk, rider_id, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng,
              status trip_status, driver_id, requested_at, matched_at, arrived_at,
              started_at, completed_at, match_latency_ms, pickup_eta_s,
-             dispatch_attempts, next_attempt_at
-             index (status), (requested_at), (status, next_attempt_at)
+             dispatch_attempts, next_attempt_at, pickup_cell, surge_multiplier
+             index (status), (requested_at), (status, next_attempt_at),
+             (pickup_cell, requested_at)
 drivers      id pk, name, status, created_at
 ride_events  id pk, trip_id -> trips.id on delete cascade, event, at
 ```
@@ -196,6 +211,12 @@ web/               Vite + React + TypeScript rider map
 
 ## Releases
 
+- **v3.0.0** Surge pricing. Trips record their `pickup_cell` and the
+  `surge_multiplier` they were priced at (Alembic `0003`). Demand per cell is
+  a half-life-decayed count of recent requests, supply is the available
+  drivers in the cell, and the multiplier rises with the ratio and decays on
+  its own. `GET /rides/surge` quotes a point, `GET /dispatch/heatmap` lists
+  every active cell.
 - **v2.0.0** Trip lifecycle and ETA. New `arrived` and `in_trip` states
   (Alembic `0002`, with a downgrade that rebuilds the enum). The
   driver_location service advances a busy driver's trip from its pings and

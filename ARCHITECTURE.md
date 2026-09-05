@@ -181,6 +181,30 @@ covers pull-over and door time. `tests/test_lifecycle.py` drives a simulated
 car across the grid and requires the ETA taken early in the drive to land
 within 15% of the measured time.
 
+## Surge pricing
+
+Surge is computed per precision-5 cell, the same partition the driver index
+uses, so demand and supply are counted over the same patch of ground.
+
+    demand(cell, now) = sum over requests r in cell of 0.5 ^ ((now - r.requested_at) / half_life)
+    supply(cell, now) = available drivers in cell with ttl > now
+    multiplier        = 1                                   if demand <= supply
+                        min(1 + step * (demand/supply - 1), cap)   otherwise
+
+Demand comes from PostgreSQL: `trips` carries `pickup_cell`, indexed with
+`requested_at`, and the query only reads the last five half-lives (older
+requests contribute under 4% each). Supply comes from DynamoDB: one partition
+query for a quote, a filtered scan for the heatmap. There are no running
+counters to keep in step with the stores, so a restart or a second replica
+cannot drift; the trade-off is a query per quote, which at a few hundred
+requests a minute is cheap. The decay is exponential rather than a fixed
+window so the multiplier eases off smoothly instead of dropping the moment a
+burst falls out of a window.
+
+The multiplier a rider was quoted is stored on the trip
+(`surge_multiplier`), so the price is fixed at request time even though the
+cell's multiplier keeps moving.
+
 ## Throughput
 
 `tests/test_throughput.py` runs the matcher in-process against moto and a real

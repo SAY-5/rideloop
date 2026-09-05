@@ -10,12 +10,19 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from rideloop_common import __version__, trips
+from rideloop_common import __version__, surge, trips
 from rideloop_common.config import get_settings
 from rideloop_common.db import make_engine, make_session_factory
 from rideloop_common.dynamo import DriverPositionStore
 from rideloop_common.eta import eta_to_point
-from rideloop_common.models import DriverLocation, DriverStatus, RideRequest, TripDetail, TripStatus
+from rideloop_common.models import (
+    DriverLocation,
+    DriverStatus,
+    RideRequest,
+    SurgeCell,
+    TripDetail,
+    TripStatus,
+)
 from services.common import add_common_routes
 
 
@@ -75,10 +82,26 @@ def _load(session: Session, trip_id: uuid.UUID):
 
 
 @app.post("/rides", response_model=TripDetail, status_code=201)
-def create_ride(request: RideRequest, session: DB) -> TripDetail:
-    trip = trips.create_trip(session, request)
+def create_ride(request: RideRequest, session: DB, store: Store) -> TripDetail:
+    """Create the trip and price it against the demand already queued in its cell."""
+    cell = surge.cell_for(request.pickup.lat, request.pickup.lng)
+    pricing = surge.surge_for_cell(session, store, cell)
+    trip = trips.create_trip(
+        session, request, pickup_cell=cell, surge_multiplier=pricing.multiplier
+    )
     session.commit()
     return _detail(trips.get_trip(session, trip.id))
+
+
+@app.get("/rides/surge", response_model=SurgeCell)
+def surge_quote(
+    session: DB,
+    store: Store,
+    lat: Annotated[float, Query(ge=-90, le=90)],
+    lng: Annotated[float, Query(ge=-180, le=180)],
+) -> SurgeCell:
+    """What a ride from this point would be multiplied by right now."""
+    return surge.surge_for_cell(session, store, surge.cell_for(lat, lng))
 
 
 @app.get("/rides", response_model=list[TripDetail])

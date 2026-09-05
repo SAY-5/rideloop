@@ -6,14 +6,15 @@ import logging
 import threading
 import time
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 from fastapi import FastAPI
 
-from rideloop_common import __version__, trips
+from rideloop_common import __version__, surge, trips
 from rideloop_common.config import get_settings
 from rideloop_common.db import make_engine, make_session_factory
 from rideloop_common.dynamo import DriverPositionStore
-from rideloop_common.models import DispatchStats
+from rideloop_common.models import DispatchStats, Heatmap
 from services.common import add_common_routes
 from services.dispatch.matcher import Matcher
 
@@ -26,8 +27,9 @@ _state: dict = {}
 async def lifespan(_: FastAPI):
     settings = get_settings()
     session_factory = make_session_factory(make_engine(settings))
+    store = DriverPositionStore(settings)
     matcher = Matcher(
-        DriverPositionStore(settings),
+        store,
         session_factory,
         initial_radius_m=settings.dispatch_initial_radius_m,
         max_radius_m=settings.dispatch_max_radius_m,
@@ -42,7 +44,9 @@ async def lifespan(_: FastAPI):
         daemon=True,
     )
     worker.start()
-    _state.update(matcher=matcher, session_factory=session_factory, stop=stop, worker=worker)
+    _state.update(
+        matcher=matcher, session_factory=session_factory, store=store, stop=stop, worker=worker
+    )
     try:
         yield
     finally:
@@ -64,3 +68,12 @@ def dispatch_stats() -> DispatchStats:
         sweeps=matcher.stats.sweeps,
         uptime_s=round(time.monotonic() - matcher.stats.started_at, 1),
     )
+
+
+@app.get("/dispatch/heatmap", response_model=Heatmap)
+def dispatch_heatmap() -> Heatmap:
+    """Demand, supply and surge multiplier for every cell with activity."""
+    now = datetime.now(UTC)
+    with _state["session_factory"]() as session:
+        cells = surge.heatmap(session, _state["store"], now=now)
+    return Heatmap(at=now, half_life_s=get_settings().surge_half_life_s, cells=cells)
