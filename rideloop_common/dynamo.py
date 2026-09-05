@@ -308,6 +308,29 @@ class DriverPositionStore:
                 return False
             raise
 
+    def release_claim(self, driver_id: str, trip_id: str) -> bool:
+        """Free a driver only if it is still busy with this trip. False otherwise."""
+        current = self.get_driver(driver_id)
+        if current is None:
+            return False
+        try:
+            self.table.update_item(
+                Key={"cell": current.cell, "driver_id": driver_id},
+                UpdateExpression="SET #s = :avail REMOVE trip_id",
+                ConditionExpression="#s = :busy AND trip_id = :trip",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={
+                    ":avail": DriverStatus.AVAILABLE.value,
+                    ":busy": DriverStatus.BUSY.value,
+                    ":trip": trip_id,
+                },
+            )
+            return True
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+
     def set_status(self, driver_id: str, status: DriverStatus) -> DriverPosition | None:
         """Explicitly set a driver's status (release after a trip, go offline)."""
         current = self.get_driver(driver_id)

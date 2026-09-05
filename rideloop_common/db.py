@@ -16,7 +16,7 @@ from sqlalchemy import (
     create_engine,
     func,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
@@ -43,6 +43,9 @@ class Driver(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    offers: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    accepts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    declines: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 class Trip(Base):
@@ -73,6 +76,11 @@ class Trip(Base):
     )
     pickup_cell: Mapped[str | None] = mapped_column(String(12), nullable=True)
     surge_multiplier: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    offered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    declined_by: Mapped[list[str]] = mapped_column(
+        ARRAY(String(64)), nullable=False, default=list, server_default="{}"
+    )
 
     events: Mapped[list[RideEvent]] = relationship(
         back_populates="trip", cascade="all, delete-orphan", order_by="RideEvent.at"
@@ -83,6 +91,7 @@ class Trip(Base):
         Index("ix_trips_requested_at", "requested_at"),
         Index("ix_trips_status_next_attempt", "status", "next_attempt_at"),
         Index("ix_trips_pickup_cell_requested_at", "pickup_cell", "requested_at"),
+        Index("ix_trips_status_offered_at", "status", "offered_at"),
     )
 
 

@@ -35,6 +35,7 @@ async def lifespan(_: FastAPI):
         max_radius_m=settings.dispatch_max_radius_m,
         retry_delay_s=settings.dispatch_retry_delay_s,
         batch_size=settings.dispatch_batch_size,
+        offer_timeout_s=settings.dispatch_offer_timeout_s,
     )
     stop = threading.Event()
     worker = threading.Thread(

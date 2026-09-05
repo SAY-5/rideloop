@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     dispatch_initial_radius_m: float = 500.0
     dispatch_max_radius_m: float = 4000.0
     dispatch_retry_delay_s: float = 1.0
+    dispatch_offer_timeout_s: float = 15.0
 
     # Surge pricing
     surge_half_life_s: float = 60.0

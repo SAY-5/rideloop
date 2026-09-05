@@ -43,6 +43,7 @@ class MatcherStats:
     sweeps: int = 0
     matched: int = 0
     deferred: int = 0
+    timed_out: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -55,23 +56,28 @@ class Matcher:
         max_radius_m: float = 4000.0,
         retry_delay_s: float = 1.0,
         batch_size: int = 50,
+        offer_timeout_s: float = 15.0,
     ):
         self.store = store
         self.session_factory = session_factory
         self.radii = expanding_radii(initial_radius_m, max_radius_m)
         self.retry_delay = timedelta(seconds=retry_delay_s)
         self.batch_size = batch_size
+        self.offer_timeout = timedelta(seconds=offer_timeout_s)
         self.stats = MatcherStats()
 
-    def find_driver(self, lat: float, lng: float, trip_id: str) -> MatchOutcome:
+    def find_driver(
+        self, lat: float, lng: float, trip_id: str, exclude: set[str] | None = None
+    ) -> MatchOutcome:
         """Widen the search ring until a driver is claimed or the cap is reached.
 
         Candidates are ranked by haversine distance. The claim is a conditional
         update in DynamoDB, so two matchers racing for the same driver cannot both
-        succeed: the loser simply moves on to the next nearest candidate.
+        succeed: the loser simply moves on to the next nearest candidate. Drivers
+        in ``exclude`` (those who already declined this trip) are never offered it.
         """
         seen = 0
-        tried: set[str] = set()
+        tried: set[str] = set(exclude or ())
         for radius in self.radii:
             candidates = self.store.nearby(lat, lng, radius, statuses={DriverStatus.AVAILABLE})
             for candidate in candidates:
@@ -85,7 +91,9 @@ class Matcher:
 
     def dispatch_trip(self, session, trip: Trip, now: datetime | None = None) -> bool:
         now = now or datetime.now(UTC)
-        outcome = self.find_driver(trip.pickup_lat, trip.pickup_lng, str(trip.id))
+        outcome = self.find_driver(
+            trip.pickup_lat, trip.pickup_lng, str(trip.id), exclude=set(trip.declined_by)
+        )
         if outcome.driver is None:
             trips.defer_trip(session, trip, self.retry_delay, now=now)
             return False
@@ -99,8 +107,22 @@ class Matcher:
         )
         return True
 
+    def expire_offers(self, now: datetime | None = None) -> int:
+        """Take back offers the driver never answered and free those drivers."""
+        with self.session_factory() as session, session.begin():
+            expired = [
+                (trip.id, driver_id)
+                for trip, driver_id in trips.expire_offers(session, self.offer_timeout, now=now)
+            ]
+        for trip_id, driver_id in expired:
+            if not self.store.release_claim(driver_id, str(trip_id)):
+                log.warning("driver %s was no longer claimed by trip %s", driver_id, trip_id)
+        return len(expired)
+
     def run_once(self) -> int:
-        """One sweep: claim a batch of pending trips and try to match each. Returns matches."""
+        """One sweep: expire stale offers, claim a batch of pending trips and try to
+        match each. Returns matches."""
+        timed_out = self.expire_offers()
         matched = 0
         deferred = 0
         with self.session_factory() as session, session.begin():
@@ -113,6 +135,7 @@ class Matcher:
             self.stats.sweeps += 1
             self.stats.matched += matched
             self.stats.deferred += deferred
+            self.stats.timed_out += timed_out
         return matched
 
     def run_forever(self, poll_interval_s: float, stop: threading.Event) -> None:

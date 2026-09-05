@@ -102,6 +102,9 @@ class Trip(BaseModel):
     dispatch_attempts: int = 0
     pickup_cell: str | None = None
     surge_multiplier: float = 1.0
+    offered_at: datetime | None = None
+    accepted_at: datetime | None = None
+    declined_by: list[str] = Field(default_factory=list)
 
 
 class DriverLocation(BaseModel):
@@ -127,8 +130,20 @@ class DispatchStats(BaseModel):
     matches_per_minute: float
     p50_match_latency_ms: float | None
     p95_match_latency_ms: float | None
+    offers_declined: int
+    offers_timed_out: int
     sweeps: int
     uptime_s: float
+
+
+class DriverAcceptance(BaseModel):
+    """How a driver has responded to the trips offered to it."""
+
+    driver_id: str
+    offers: int
+    accepts: int
+    declines: int
+    acceptance_rate: float | None
 
 
 class SurgeCell(BaseModel):

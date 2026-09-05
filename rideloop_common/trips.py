@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, selectinload
 from rideloop_common.db import Driver, RideEvent, Trip
 from rideloop_common.eta import eta_to_point
 from rideloop_common.geo import manhattan_m
-from rideloop_common.models import RideRequest, TripStatus
+from rideloop_common.models import DriverAcceptance, RideRequest, TripStatus
 
 # Within this route distance of the pickup or dropoff the driver counts as there.
 ARRIVAL_RADIUS_M = 40.0
@@ -92,17 +92,102 @@ def claim_pending(session: Session, batch_size: int, now: datetime | None = None
 
 
 def mark_matched(session: Session, trip: Trip, driver_id: str, now: datetime | None = None) -> Trip:
+    """Assign a claimed driver. The assignment is an offer until the driver accepts."""
     now = now or datetime.now(UTC)
     if trip.status != TripStatus.REQUESTED:
         raise InvalidTransition(f"trip {trip.id} is {trip.status.value}, not requested")
     trip.status = TripStatus.MATCHED
     trip.driver_id = driver_id
     trip.matched_at = now
+    trip.offered_at = now
+    trip.accepted_at = None
     trip.match_latency_ms = int((now - trip.requested_at).total_seconds() * 1000)
     trip.dispatch_attempts += 1
     session.add(RideEvent(trip_id=trip.id, event="matched", at=now))
-    _mirror_driver_status(session, driver_id, "busy")
+    driver = _mirror_driver_status(session, driver_id, "busy")
+    driver.offers += 1
     return trip
+
+
+def _check_offer(trip: Trip, driver_id: str) -> None:
+    if trip.status != TripStatus.MATCHED or trip.accepted_at is not None:
+        raise InvalidTransition(f"trip {trip.id} has no open offer")
+    if trip.driver_id != driver_id:
+        raise InvalidTransition(f"trip {trip.id} was not offered to {driver_id}")
+
+
+def accept_offer(session: Session, trip: Trip, driver_id: str, now: datetime | None = None) -> Trip:
+    """The offered driver takes the trip; from here pings move it along."""
+    now = now or datetime.now(UTC)
+    if trip.status == TripStatus.MATCHED and trip.accepted_at and trip.driver_id == driver_id:
+        return trip
+    _check_offer(trip, driver_id)
+    trip.accepted_at = now
+    trip.events.append(RideEvent(event="accepted", at=now))
+    _mirror_driver_status(session, driver_id, "busy").accepts += 1
+    return trip
+
+
+def decline_offer(
+    session: Session,
+    trip: Trip,
+    driver_id: str,
+    now: datetime | None = None,
+    reason: str = "declined",
+) -> Trip:
+    """Put the trip back in the queue with this driver excluded from the next match.
+
+    The caller must release the driver's DynamoDB claim once this commits.
+    """
+    now = now or datetime.now(UTC)
+    _check_offer(trip, driver_id)
+    trip.status = TripStatus.REQUESTED
+    trip.driver_id = None
+    trip.matched_at = None
+    trip.offered_at = None
+    trip.match_latency_ms = None
+    trip.pickup_eta_s = None
+    trip.declined_by = [*trip.declined_by, driver_id]
+    trip.next_attempt_at = now
+    trip.events.append(RideEvent(event=reason, at=now))
+    _mirror_driver_status(session, driver_id, "available").declines += 1
+    return trip
+
+
+def expire_offers(
+    session: Session, timeout: timedelta, now: datetime | None = None
+) -> list[tuple[Trip, str]]:
+    """Time out offers nobody answered; returns (trip, driver_id) pairs to release."""
+    now = now or datetime.now(UTC)
+    query = (
+        select(Trip)
+        .options(selectinload(Trip.events))
+        .where(
+            Trip.status == TripStatus.MATCHED,
+            Trip.accepted_at.is_(None),
+            Trip.offered_at <= now - timeout,
+        )
+        .with_for_update(skip_locked=True)
+    )
+    released = []
+    for trip in session.scalars(query):
+        driver_id = trip.driver_id
+        decline_offer(session, trip, driver_id, now=now, reason="offer_timeout")
+        released.append((trip, driver_id))
+    return released
+
+
+def driver_acceptance(session: Session, driver_id: str) -> DriverAcceptance | None:
+    driver = session.get(Driver, driver_id)
+    if driver is None:
+        return None
+    return DriverAcceptance(
+        driver_id=driver_id,
+        offers=driver.offers,
+        accepts=driver.accepts,
+        declines=driver.declines,
+        acceptance_rate=round(driver.accepts / driver.offers, 3) if driver.offers else None,
+    )
 
 
 def defer_trip(session: Session, trip: Trip, retry_after: timedelta, now: datetime | None = None):
@@ -163,7 +248,7 @@ def advance_from_position(
     to_pickup = manhattan_m(lat, lng, trip.pickup_lat, trip.pickup_lng)
     to_dropoff = manhattan_m(lat, lng, trip.dropoff_lat, trip.dropoff_lng)
     target: TripStatus | None = None
-    if trip.status == TripStatus.MATCHED:
+    if trip.status == TripStatus.MATCHED and trip.accepted_at is not None:
         target = TripStatus.ARRIVED if to_pickup <= ARRIVAL_RADIUS_M else TripStatus.EN_ROUTE
     elif trip.status == TripStatus.EN_ROUTE and to_pickup <= ARRIVAL_RADIUS_M:
         target = TripStatus.ARRIVED
@@ -183,13 +268,15 @@ def advance_from_position(
     return target
 
 
-def _mirror_driver_status(session: Session, driver_id: str, status: str) -> None:
+def _mirror_driver_status(session: Session, driver_id: str, status: str) -> Driver:
     driver = session.get(Driver, driver_id)
     if driver is None:
         driver = Driver(id=driver_id, name=driver_id, status=status)
         session.add(driver)
+        session.flush()
     else:
         driver.status = status
+    return driver
 
 
 def match_stats(session: Session, window: timedelta = timedelta(minutes=1)) -> dict:
@@ -209,6 +296,11 @@ def match_stats(session: Session, window: timedelta = timedelta(minutes=1)) -> d
             func.percentile_cont(0.95).within_group(recent.c.match_latency_ms),
         )
     ).one()
+    declined, timed_out = (
+        session.scalar(select(func.count()).select_from(RideEvent).where(RideEvent.event == event))
+        or 0
+        for event in ("declined", "offer_timeout")
+    )
     return {
         "matched_total": matched_total or 0,
         "pending": pending or 0,
@@ -216,4 +308,6 @@ def match_stats(session: Session, window: timedelta = timedelta(minutes=1)) -> d
         "matches_per_minute": float(matches_last_minute or 0) / (window.total_seconds() / 60),
         "p50_match_latency_ms": float(p50) if p50 is not None else None,
         "p95_match_latency_ms": float(p95) if p95 is not None else None,
+        "offers_declined": declined,
+        "offers_timed_out": timed_out,
     }
