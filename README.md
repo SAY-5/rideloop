@@ -56,6 +56,7 @@ rides left requested      0
 matches per minute        601 (600 matches over 59.9s, first request to last match)
 match latency p50 / p95   59 ms / 101 ms (mean 57 ms)
 dispatch service stats    matched_total=1200 last_minute=520 p50=59.0 p95=101.0 sweeps=3491
+offers                    ...
 ttl expiry                driver drv-000 stopped at 22:01:27; visible after 3s: yes; visible after ttl (19s): no -> expired as expected
 =======================================================
 ```
@@ -96,8 +97,10 @@ trail, the position-driven en_route / arrived / in_trip / completed
 progression, the pickup ETA against a simulated grid drive (within 15%),
 migrations up and down including the enum rebuild, the surge multiplier
 climbing over a burst of requests in one cell and cooling off with the
-half-life, the heatmap ordering, and an in-process run of 500 trips that must
-sustain at least 500 matches per minute. CI (`.github/workflows/ci.yml`) runs
+half-life, the heatmap ordering, offers that must be accepted before pings move the trip,
+declines and timeouts releasing the claim and rematching without the
+decliner, and an in-process run of 500 trips that must sustain at least 500
+matches per minute. CI (`.github/workflows/ci.yml`) runs
 the same steps with a `postgres:16` service container and a separate job for
 the web app.
 
@@ -112,6 +115,7 @@ the web app.
 | `DATABASE_URL` | `postgresql+psycopg://rideloop:rideloop@localhost:5432/rideloop` | ride_request, dispatch |
 | `DISPATCH_INITIAL_RADIUS_M` / `DISPATCH_MAX_RADIUS_M` | `500` / `4000` | dispatch |
 | `DISPATCH_RETRY_DELAY_S` | `1.0` | dispatch |
+| `DISPATCH_OFFER_TIMEOUT_S` | `15.0` | dispatch |
 | `DISPATCH_POLL_INTERVAL_S` | `0.1` | dispatch |
 | `SURGE_HALF_LIFE_S` / `SURGE_STEP` / `SURGE_MAX_MULTIPLIER` | `60` / `0.5` / `3.0` | ride_request, dispatch |
 | `DRIVER_LOCATION_URL` / `RIDE_REQUEST_URL` / `DISPATCH_URL` | `http://localhost:800{1,2,3}` | simulators |
@@ -136,14 +140,22 @@ the web app.
 | `GET` | `/rides/surge?lat&lng` | the cell a pickup at this point falls in with its current `demand`, `supply` and `multiplier` |
 | `GET` | `/rides/{id}` | trip with its `events`, plus `driver_position` (lat, lng, heading, speed_mps, distance_to_pickup_m, updated_at) and `pickup_eta_s` while a driver is assigned |
 | `GET` | `/rides?status&limit` | recent trips (no driver position lookup) |
+| `POST` | `/rides/{id}/accept?driver_id=` | the offered driver takes the trip; sets `accepted_at`, after which its pings move the trip along |
+| `POST` | `/rides/{id}/decline?driver_id=` | the offered driver passes: the claim is released, the trip goes back to `requested` with the driver in `declined_by`, and the next sweep rematches it to someone else |
+| `GET` | `/drivers/{id}/acceptance` | `offers`, `accepts`, `declines` (timeouts included) and `acceptance_rate` for a driver |
 | `POST` | `/rides/{id}/start` | `matched` to `en_route` (rider-side shortcut; pings do this on their own) |
 | `POST` | `/rides/{id}/complete` | any active state to `completed`; frees the driver |
 | `POST` | `/rides/{id}/cancel` | `requested`/`matched`/`en_route`/`arrived` to `cancelled`; frees the driver |
 
 Trip lifecycle: `requested` -> `matched` -> `en_route` -> `arrived` ->
 `in_trip` -> `completed`, with `cancelled` reachable from every state before
-the rider is aboard. The transitions after `matched` are driven by the
-assigned driver's position reports: the first ping after the match sets
+the rider is aboard. A match is an offer: the trip carries `offered_at` and
+the driver has `DISPATCH_OFFER_TIMEOUT_S` (15 s) to accept or decline. A
+decline, or silence past the timeout, releases the DynamoDB claim with a
+conditional update, appends the driver to `declined_by`, and puts the trip
+back in the queue where the next sweep matches it to the nearest driver not
+in that list. The transitions after acceptance are driven by the assigned
+driver's position reports: the first ping after acceptance sets
 `en_route`, a ping within 40 m (route distance) of the pickup sets `arrived`,
 pulling 120 m away from the pickup again sets `in_trip`, and a ping within
 40 m of the dropoff sets `completed` and releases the driver. Every hop is
@@ -160,7 +172,7 @@ ETA.
 
 | method | path | notes |
 | --- | --- | --- |
-| `GET` | `/dispatch/stats` | `matched_total`, `pending`, `matches_last_minute`, `matches_per_minute`, `p50_match_latency_ms`, `p95_match_latency_ms`, `sweeps`, `uptime_s` |
+| `GET` | `/dispatch/stats` | `matched_total`, `pending`, `matches_last_minute`, `matches_per_minute`, `p50_match_latency_ms`, `p95_match_latency_ms`, `offers_declined`, `offers_timed_out`, `sweeps`, `uptime_s` |
 | `GET` | `/dispatch/heatmap` | every cell with recent demand or available drivers: `cell`, `lat`, `lng`, `demand`, `supply`, `multiplier`, hottest first |
 
 Surge pricing works per precision-5 cell. Demand is the sum of recent ride
@@ -181,16 +193,17 @@ key `driver_id`, attributes `geohash` (precision 6), `lat`, `lng`, `heading`,
 `speed_mps`, `status`, `trip_id`, `updated_at`, `ttl` (TTL attribute), GSI
 `by_driver`.
 
-PostgreSQL (Alembic revisions `0001` to `0003`):
+PostgreSQL (Alembic revisions `0001` to `0004`):
 
 ```
 trips        id uuid pk, rider_id, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng,
-             status trip_status, driver_id, requested_at, matched_at, arrived_at,
-             started_at, completed_at, match_latency_ms, pickup_eta_s,
-             dispatch_attempts, next_attempt_at, pickup_cell, surge_multiplier
+             status trip_status, driver_id, requested_at, matched_at, offered_at,
+             accepted_at, arrived_at, started_at, completed_at, match_latency_ms,
+             pickup_eta_s, dispatch_attempts, next_attempt_at, pickup_cell,
+             surge_multiplier, declined_by varchar[]
              index (status), (requested_at), (status, next_attempt_at),
-             (pickup_cell, requested_at)
-drivers      id pk, name, status, created_at
+             (pickup_cell, requested_at), (status, offered_at)
+drivers      id pk, name, status, created_at, offers, accepts, declines
 ride_events  id pk, trip_id -> trips.id on delete cascade, event, at
 ```
 
@@ -211,6 +224,12 @@ web/               Vite + React + TypeScript rider map
 
 ## Releases
 
+- **v4.0.0** Driver accept and decline. A match is an offer with a timeout;
+  `POST /rides/{id}/accept` and `/decline` answer it, an unanswered offer
+  times out in the dispatcher's sweep. Declines and timeouts release the claim
+  with a conditional update, re-queue the trip with the driver excluded, and
+  count against the driver's acceptance rate (`GET /drivers/{id}/acceptance`).
+  Simulated drivers decline 10% of offers in the demo to exercise the rematch.
 - **v3.0.0** Surge pricing. Trips record their `pickup_cell` and the
   `surge_multiplier` they were priced at (Alembic `0003`). Demand per cell is
   a half-life-decayed count of recent requests, supply is the available

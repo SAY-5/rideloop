@@ -49,6 +49,7 @@ def matched_trip(store, session_factory, driver_id: str, driver_at) -> uuid.UUID
         trip = trips.create_trip(s, req)
         assert store.try_mark_busy(pos.cell, driver_id, str(trip.id))
         trips.mark_matched(s, trip, driver_id)
+        trips.accept_offer(s, trip, driver_id)
         return trip.id
 
 
@@ -94,6 +95,7 @@ def test_pings_drive_the_trip_through_every_state(store, session_factory):
         assert [e.event for e in row.events] == [
             "requested",
             "matched",
+            "accepted",
             "en_route",
             "arrived",
             "in_trip",

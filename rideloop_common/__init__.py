@@ -1,3 +1,3 @@
 """Shared code for the RideLoop services: geohash, geo math, models, config, storage."""
 
-__version__ = "3.0.0"
+__version__ = "4.0.0"

@@ -27,7 +27,12 @@ def test_upgrade_creates_schema(migrated_engine):
         "pickup_eta_s",
         "pickup_cell",
         "surge_multiplier",
+        "offered_at",
+        "accepted_at",
+        "declined_by",
     }
+    driver_cols = {c["name"] for c in insp.get_columns("drivers")}
+    assert {"offers", "accepts", "declines"} <= driver_cols
     indexes = {i["name"] for i in insp.get_indexes("trips")}
     assert {
         "ix_trips_status",
@@ -84,6 +89,10 @@ def test_downgrade_to_0001_rebuilds_the_enum_without_progress_states(migrated_en
                 "dropoff_lng, status) VALUES (gen_random_uuid(), 'r', 0, 0, 0, 0, 'in_trip')"
             )
         )
+    command.downgrade(cfg, "0003")
+    cols = {c["name"] for c in inspect(migrated_engine).get_columns("trips")}
+    assert "declined_by" not in cols and "offered_at" not in cols
+    assert "offers" not in {c["name"] for c in inspect(migrated_engine).get_columns("drivers")}
     command.downgrade(cfg, "0002")
     cols = {c["name"] for c in inspect(migrated_engine).get_columns("trips")}
     assert "surge_multiplier" not in cols and "pickup_cell" not in cols

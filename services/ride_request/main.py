@@ -16,6 +16,7 @@ from rideloop_common.db import make_engine, make_session_factory
 from rideloop_common.dynamo import DriverPositionStore
 from rideloop_common.eta import eta_to_point
 from rideloop_common.models import (
+    DriverAcceptance,
     DriverLocation,
     DriverStatus,
     RideRequest,
@@ -143,3 +144,37 @@ def complete_ride(trip_id: uuid.UUID, session: DB, store: Store) -> TripDetail:
 @app.post("/rides/{trip_id}/cancel", response_model=TripDetail)
 def cancel_ride(trip_id: uuid.UUID, session: DB, store: Store) -> TripDetail:
     return _apply(session, store, trip_id, TripStatus.CANCELLED)
+
+
+@app.post("/rides/{trip_id}/accept", response_model=TripDetail)
+def accept_ride(trip_id: uuid.UUID, driver_id: str, session: DB, store: Store) -> TripDetail:
+    """The offered driver takes the trip."""
+    trip = _load(session, trip_id)
+    try:
+        trips.accept_offer(session, trip, driver_id)
+    except trips.InvalidTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    session.commit()
+    return _with_driver(trips.get_trip(session, trip_id), store)
+
+
+@app.post("/rides/{trip_id}/decline", response_model=TripDetail)
+def decline_ride(trip_id: uuid.UUID, driver_id: str, session: DB, store: Store) -> TripDetail:
+    """The offered driver passes: the claim is released and the trip is re-queued
+    for the next sweep with this driver excluded."""
+    trip = _load(session, trip_id)
+    try:
+        trips.decline_offer(session, trip, driver_id)
+    except trips.InvalidTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    session.commit()
+    store.release_claim(driver_id, str(trip_id))
+    return _detail(trips.get_trip(session, trip_id))
+
+
+@app.get("/drivers/{driver_id}/acceptance", response_model=DriverAcceptance)
+def driver_acceptance(driver_id: str, session: DB) -> DriverAcceptance:
+    stats = trips.driver_acceptance(session, driver_id)
+    if stats is None:
+        raise HTTPException(status_code=404, detail="driver not found")
+    return stats

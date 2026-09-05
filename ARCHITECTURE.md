@@ -143,6 +143,38 @@ Trip completion (`POST /rides/{id}/complete`, or the driver's ping at the
 dropoff) flips the driver back to `available` in DynamoDB and mirrors the
 status into `drivers`.
 
+## Offers, declines and rematch
+
+A match is not final until the driver says so. `mark_matched` records
+`offered_at`; the trip stays `matched` with `accepted_at` null until the
+driver calls `accept`. Three things can end an open offer:
+
+- `accept`: `accepted_at` is set and from then on the driver's pings move the
+  trip along.
+- `decline`: in one PostgreSQL transaction the trip goes back to `requested`
+  with `driver_id` cleared, the driver appended to `declined_by` and
+  `next_attempt_at = now`; after the commit the DynamoDB claim is released
+  with a conditional update (`status = busy AND trip_id = this trip`), so a
+  driver that has meanwhile been claimed for another trip is left alone.
+- timeout: every dispatcher sweep first runs `expire_offers`, a
+  `FOR UPDATE SKIP LOCKED` select over `matched` trips with a null
+  `accepted_at` and `offered_at` older than `DISPATCH_OFFER_TIMEOUT_S`, and
+  treats each as a decline with the event `offer_timeout`.
+
+The next sweep picks the re-queued trip up like any other; the matcher seeds
+its "already tried" set with `declined_by`, so the decliner is skipped even
+when it is still the nearest available driver. `dispatch_attempts` and the
+event trail (`matched`, `declined`, `matched`) show the rematch. The
+ordering of the decline (commit, then release the claim) means a crash in
+between leaves the driver busy until its next completion or a timeout, the
+same liability the two-store match already has; the reverse order could
+leave a trip pointing at a driver another trip has since claimed, which is
+worse.
+
+Acceptance is tracked on the `drivers` row: `offers` increments on every
+match, `accepts` on accept, `declines` on decline or timeout.
+`GET /drivers/{id}/acceptance` reports the rate.
+
 ## Trip lifecycle from position reports
 
 ```
@@ -151,8 +183,8 @@ requested --match--> matched --ping--> en_route --ping <=40m of pickup--> arrive
         completed <--ping <=40m of dropoff-- in_trip <--ping >=120m from pickup--+
 ```
 
-After the match the trip is moved along by the assigned driver's pings, not
-by client calls. The driver_location service, having stored a ping from a
+After the driver accepts, the trip is moved along by its pings, not by
+client calls; a ping before acceptance only refreshes the ETA. The driver_location service, having stored a ping from a
 `busy` driver, loads the trip named in the item's `trip_id`, checks the
 trip's `driver_id` matches (a stale claim is ignored) and runs
 `trips.advance_from_position` in one PostgreSQL transaction. Distances are

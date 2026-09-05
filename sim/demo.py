@@ -68,7 +68,7 @@ def percentile(values: list[int], pct: float) -> float:
     return float(ordered[index])
 
 
-async def run(drivers: int, rate: float, duration: float) -> int:
+async def run(drivers: int, rate: float, duration: float, decline_rate: float) -> int:
     settings = get_settings()
     loc, ride, dispatch = (
         settings.driver_location_url,
@@ -80,7 +80,7 @@ async def run(drivers: int, rate: float, duration: float) -> int:
         await wait_healthy(client, [loc, ride, dispatch])
 
         print(f"seeding {drivers} drivers...")
-        fleet = DriverFleet(loc, ride, drivers)
+        fleet = DriverFleet(loc, ride, drivers, decline_rate=decline_rate)
         fleet_thread = FleetThread(fleet)
         fleet_thread.start()
         deadline = time.monotonic() + 60
@@ -151,6 +151,17 @@ async def run(drivers: int, rate: float, duration: float) -> int:
             f"match latency p50 / p95   {percentile(latencies, 50):.0f} ms / "
             f"{percentile(latencies, 95):.0f} ms (mean {statistics.mean(latencies):.0f} ms)"
         )
+    rematched = sum(
+        1
+        for r in matched
+        if {e["event"] for e in r.trip.get("events", [])} & {"declined", "offer_timeout"}
+    )
+    print(
+        f"offers                    {fleet.accepted} accepted, {fleet.declined} declined by "
+        f"drivers (decline rate {decline_rate:.0%}); {stats['offers_declined']} declines and "
+        f"{stats['offers_timed_out']} timeouts re-queued, {rematched} of the matched rides "
+        f"went through a rematch"
+    )
     print(
         f"dispatch service stats    matched_total={stats['matched_total']} "
         f"last_minute={stats['matches_last_minute']} "
@@ -172,8 +183,9 @@ def main() -> None:
     parser.add_argument("--drivers", type=int, default=300)
     parser.add_argument("--rate", type=float, default=10.0)
     parser.add_argument("--duration", type=float, default=60.0)
+    parser.add_argument("--decline-rate", type=float, default=0.1)
     args = parser.parse_args()
-    raise SystemExit(asyncio.run(run(args.drivers, args.rate, args.duration)))
+    raise SystemExit(asyncio.run(run(args.drivers, args.rate, args.duration, args.decline_rate)))
 
 
 if __name__ == "__main__":

@@ -1,9 +1,11 @@
 """Simulated drivers that post a position every second.
 
 A driver wanders the grid until the location service reports it as busy, then
-looks up its trip, heads for the pickup, waits for the rider and drives on to
-the dropoff. The location service advances the trip from those pings and
-releases the driver at the dropoff, after which it wanders again.
+looks up its trip and accepts it (or declines it, with ``decline_rate``
+probability, to exercise the rematch path), heads for the pickup, waits for
+the rider and drives on to the dropoff. The location service advances the
+trip from those pings and releases the driver at the dropoff, after which it
+wanders again.
 """
 
 from __future__ import annotations
@@ -33,11 +35,16 @@ class DriverFleet:
         interval_s: float = 1.0,
         seed: int = 42,
         prefix: str = "drv",
+        decline_rate: float = 0.0,
     ):
         self.location_url = location_url.rstrip("/")
         self.ride_url = ride_url.rstrip("/")
         self.interval_s = interval_s
+        self.decline_rate = decline_rate
+        self.accepted = 0
+        self.declined = 0
         rng = random.Random(seed)
+        self._rng = random.Random(rng.random())
         self.drivers = [
             SimDriver.spawn(f"{prefix}-{i:03d}", random.Random(rng.random())) for i in range(count)
         ]
@@ -100,14 +107,27 @@ class DriverFleet:
         if trip_id is None:
             driver.clear_target()
             return
+        answer = "decline" if self._rng.random() < self.decline_rate else "accept"
         try:
-            trip = (await self._client.get(f"{self.ride_url}/rides/{trip_id}")).json()
-            driver.set_route(
-                latlng_to_local(trip["pickup_lat"], trip["pickup_lng"]),
-                latlng_to_local(trip["dropoff_lat"], trip["dropoff_lng"]),
+            resp = await self._client.post(
+                f"{self.ride_url}/rides/{trip_id}/{answer}",
+                params={"driver_id": driver.driver_id},
             )
-        except (httpx.HTTPError, KeyError, ValueError):
+            resp.raise_for_status()
+            trip = resp.json()
+        except (httpx.HTTPError, ValueError):
             driver.clear_target()
+            return
+        if answer == "decline":
+            self.declined += 1
+            driver.trip_id = None
+            driver.clear_target()
+            return
+        self.accepted += 1
+        driver.set_route(
+            latlng_to_local(trip["pickup_lat"], trip["pickup_lng"]),
+            latlng_to_local(trip["dropoff_lat"], trip["dropoff_lng"]),
+        )
 
 
 class FleetThread:
@@ -143,15 +163,24 @@ class FleetThread:
         self._thread.join(timeout=10)
 
 
-async def run(count: int, duration_s: float, interval_s: float) -> None:
+async def run(count: int, duration_s: float, interval_s: float, decline_rate: float) -> None:
     settings = get_settings()
-    fleet = DriverFleet(settings.driver_location_url, settings.ride_request_url, count, interval_s)
+    fleet = DriverFleet(
+        settings.driver_location_url,
+        settings.ride_request_url,
+        count,
+        interval_s,
+        decline_rate=decline_rate,
+    )
     await fleet.start()
     try:
         await asyncio.sleep(duration_s)
     finally:
         await fleet.stop()
-    print(f"drivers={count} posts={fleet.posts} errors={fleet.errors}")
+    print(
+        f"drivers={count} posts={fleet.posts} errors={fleet.errors} "
+        f"accepted={fleet.accepted} declined={fleet.declined}"
+    )
 
 
 def main() -> None:
@@ -159,9 +188,10 @@ def main() -> None:
     parser.add_argument("--count", type=int, default=300)
     parser.add_argument("--duration", type=float, default=60.0)
     parser.add_argument("--interval", type=float, default=1.0)
+    parser.add_argument("--decline-rate", type=float, default=0.0)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
-    asyncio.run(run(args.count, args.duration, args.interval))
+    asyncio.run(run(args.count, args.duration, args.interval, args.decline_rate))
 
 
 if __name__ == "__main__":

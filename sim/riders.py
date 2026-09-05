@@ -92,7 +92,8 @@ class RiderLoad:
                 trip = (await client.get(f"{self.ride_url}/rides/{record.trip_id}")).json()
             except (httpx.HTTPError, ValueError):
                 continue
-            if trip["status"] == "matched":
+            accepted = trip["status"] != "matched" or trip.get("accepted_at")
+            if trip["status"] in ACTIVE and accepted:
                 record.matched_at = time.time()
                 record.match_latency_ms = trip["match_latency_ms"]
                 record.driver_id = trip["driver_id"]

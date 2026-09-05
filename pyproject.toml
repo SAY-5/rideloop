@@ -1,6 +1,6 @@
 [project]
 name = "rideloop"
-version = "3.0.0"
+version = "4.0.0"
 description = "Ride request, driver location, and dispatch microservices with geohash-indexed DynamoDB positions and PostgreSQL trips"
 readme = "README.md"
 requires-python = ">=3.12"
