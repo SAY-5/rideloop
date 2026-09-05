@@ -2,7 +2,9 @@
 
 The driver's pings move a trip through en_route, arrived and in_trip on their
 own; the rider only steps in to end a trip that the driver has not finished
-within the ride window, so a 60 second run still completes every ride.
+within the ride window, so a 60 second run still completes every ride. Riders
+poll once a second while waiting for an accepted match and then leave the
+trip alone until the window is up, which keeps the load generator cheap.
 """
 
 from __future__ import annotations
@@ -114,16 +116,12 @@ class RiderLoad:
         else:
             record.final_status = "requested"
             return
-        deadline = time.monotonic() + RIDE_WINDOW_S
-        while time.monotonic() < deadline:
-            await asyncio.sleep(1.0)
-            try:
-                trip = (await client.get(f"{self.ride_url}/rides/{record.trip_id}")).json()
-            except (httpx.HTTPError, ValueError):
-                continue
-            if trip["status"] not in ACTIVE:
-                break
-        else:
+        await asyncio.sleep(RIDE_WINDOW_S)
+        try:
+            trip = (await client.get(f"{self.ride_url}/rides/{record.trip_id}")).json()
+        except (httpx.HTTPError, ValueError):
+            trip = None
+        if trip is None or trip["status"] in ACTIVE:
             trip = await self._post(client, record, "complete")
         if trip is not None:
             record.final_status = trip["status"]

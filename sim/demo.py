@@ -17,7 +17,7 @@ import httpx
 
 from rideloop_common.config import get_settings
 from sim.city import CITY_CENTER
-from sim.drivers import DriverFleet, FleetThread
+from sim.drivers import FleetProcesses
 from sim.replay import Recorder, Summary, fingerprint, percentile
 from sim.riders import RiderLoad
 
@@ -76,10 +76,8 @@ async def run(
         await wait_healthy(client, [loc, ride, dispatch])
 
         print(f"seeding {drivers} drivers...")
-        recorder = Recorder(drivers=drivers) if record else None
-        fleet = DriverFleet(loc, ride, drivers, decline_rate=decline_rate, recorder=recorder)
-        fleet_thread = FleetThread(fleet)
-        fleet_thread.start()
+        fleet = FleetProcesses(loc, ride, drivers, decline_rate=decline_rate, record=bool(record))
+        fleet.start()
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             seen = await visible_drivers(client, loc)
@@ -89,8 +87,8 @@ async def run(
         print(f"{len(seen)} drivers visible on the map")
 
         # TTL evidence: one driver goes quiet; it must vanish once its ttl passes.
-        probe = fleet.drivers[0].driver_id
-        fleet_thread.pause(probe)
+        probe = fleet.driver_ids[0]
+        fleet.pause(probe)
         probe_item = (await client.get(f"{loc}/drivers/{probe}")).json()
         stopped_at = time.time()
         ttl_epoch = int(probe_item["ttl"])
@@ -98,7 +96,8 @@ async def run(
         print(f"driver {probe} stopped pinging (ttl in {ttl_window}s)")
 
         print(f"submitting rides at {rate:g}/s for {duration:g}s...")
-        load = RiderLoad(ride, rate, duration, recorder=recorder, clock_start=fleet.started_at)
+        recorder = Recorder(drivers=drivers) if record else None
+        load = RiderLoad(ride, rate, duration, recorder=recorder, clock_start=fleet.clock_start)
         rider_task = asyncio.create_task(load.run())
 
         await asyncio.sleep(3)
@@ -114,7 +113,7 @@ async def run(
         for record in records:
             if not record.trip:
                 record.trip = (await client.get(f"{ride}/rides/{record.trip_id}")).json()
-        fleet_thread.stop()
+        report = fleet.stop()
 
     matched = [r for r in records if r.trip.get("matched_at")]
     latencies = [r.trip["match_latency_ms"] for r in matched]
@@ -133,7 +132,8 @@ async def run(
     print()
     print("================ RideLoop demo summary ================")
     print(
-        f"drivers seeded            {drivers} ({fleet.posts} position posts, {fleet.errors} errors)"
+        f"drivers seeded            {drivers} ({report.posts} position posts, "
+        f"{report.errors} errors)"
     )
     print(f"rides submitted           {len(records)} ({rate:g}/s for {duration:g}s)")
     print(f"rides matched             {len(matched)} ({len(matched) / max(len(records), 1):.1%})")
@@ -154,7 +154,7 @@ async def run(
         if {e["event"] for e in r.trip.get("events", [])} & {"declined", "offer_timeout"}
     )
     print(
-        f"offers                    {fleet.accepted} accepted, {fleet.declined} declined by "
+        f"offers                    {report.accepted} accepted, {report.declined} declined by "
         f"drivers (decline rate {decline_rate:.0%}); {stats['offers_declined']} declines and "
         f"{stats['offers_timed_out']} timeouts re-queued, {rematched} of the matched rides "
         f"went through a rematch"
@@ -173,6 +173,7 @@ async def run(
     )
     print("=======================================================")
     if recorder is not None and record is not None:
+        recorder.events.extend(report.events)
         summary = Summary(
             rides=len(records),
             matched=len(matched),

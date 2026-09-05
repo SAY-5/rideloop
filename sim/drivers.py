@@ -14,9 +14,11 @@ import argparse
 import asyncio
 import contextlib
 import logging
+import multiprocessing
 import random
-import threading
 import time
+from dataclasses import dataclass, field
+from itertools import pairwise
 
 import httpx
 
@@ -37,19 +39,22 @@ class DriverFleet:
         prefix: str = "drv",
         decline_rate: float = 0.0,
         recorder=None,
+        first_index: int = 0,
+        clock_start: float | None = None,
     ):
         self.location_url = location_url.rstrip("/")
         self.ride_url = ride_url.rstrip("/")
         self.interval_s = interval_s
         self.decline_rate = decline_rate
         self.recorder = recorder
-        self.started_at = time.monotonic()
+        self.started_at = clock_start if clock_start is not None else time.monotonic()
         self.accepted = 0
         self.declined = 0
         rng = random.Random(seed)
         self._rng = random.Random(rng.random())
         self.drivers = [
-            SimDriver.spawn(f"{prefix}-{i:03d}", random.Random(rng.random())) for i in range(count)
+            SimDriver.spawn(f"{prefix}-{i:03d}", random.Random(rng.random()))
+            for i in range(first_index, first_index + count)
         ]
         self.paused: set[str] = set()
         self.posts = 0
@@ -110,8 +115,8 @@ class DriverFleet:
         trip_id = body.get("trip_id") if body.get("status") == "busy" else None
         if trip_id == driver.trip_id:
             return
-        driver.trip_id = trip_id
         if trip_id is None:
+            driver.trip_id = None
             driver.clear_target()
             return
         answer = "decline" if self._rng.random() < self.decline_rate else "accept"
@@ -123,8 +128,10 @@ class DriverFleet:
             resp.raise_for_status()
             trip = resp.json()
         except (httpx.HTTPError, ValueError):
+            # leave trip_id unset so the next ping answers the offer again
             driver.clear_target()
             return
+        driver.trip_id = trip_id
         if answer == "decline":
             self.declined += 1
             driver.trip_id = None
@@ -137,37 +144,123 @@ class DriverFleet:
         )
 
 
-class FleetThread:
-    """Run a DriverFleet on its own event loop in a background thread.
+@dataclass
+class FleetReport:
+    posts: int = 0
+    errors: int = 0
+    accepted: int = 0
+    declined: int = 0
+    events: list = field(default_factory=list)
 
-    The demo drives riders from the main loop; keeping the fleet's 300 posts per
-    second on a separate loop stops the two workloads from starving each other.
+    def merge(self, other: FleetReport) -> None:
+        self.posts += other.posts
+        self.errors += other.errors
+        self.accepted += other.accepted
+        self.declined += other.declined
+        self.events.extend(other.events)
+
+
+def _fleet_worker(conn, kwargs: dict, record: bool) -> None:
+    """Entry point of one fleet process: run a slice of the fleet until told to stop."""
+    from sim.replay import Recorder
+
+    async def main() -> None:
+        recorder = Recorder() if record else None
+        fleet = DriverFleet(recorder=recorder, **kwargs)
+        await fleet.start()
+        conn.send(("started", [d.driver_id for d in fleet.drivers]))
+        loop = asyncio.get_running_loop()
+        while True:
+            command, arg = await loop.run_in_executor(None, conn.recv)
+            if command == "pause":
+                fleet.pause(arg)
+            elif command == "stop":
+                break
+        await fleet.stop()
+        conn.send(
+            (
+                "report",
+                FleetReport(
+                    posts=fleet.posts,
+                    errors=fleet.errors,
+                    accepted=fleet.accepted,
+                    declined=fleet.declined,
+                    events=recorder.events if recorder else [],
+                ),
+            )
+        )
+
+    asyncio.run(main())
+
+
+class FleetProcesses:
+    """Run a DriverFleet split across worker processes.
+
+    Three hundred drivers posting every second plus the rider load is more
+    than one Python process can drive without starving itself, and a starved
+    fleet shows up as late pings and expired offers. Each worker owns a slice
+    of the drivers and its own event loop; the parent only sends pause/stop
+    commands and collects the counters and recorded events at the end.
     """
 
-    def __init__(self, fleet: DriverFleet):
-        self.fleet = fleet
-        self.loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(target=self._run, name="driver-fleet", daemon=True)
-        self._started = threading.Event()
-
-    def _run(self) -> None:
-        asyncio.set_event_loop(self.loop)
-        self.loop.run_until_complete(self.fleet.start())
-        self._started.set()
-        self.loop.run_forever()
+    def __init__(
+        self,
+        location_url: str,
+        ride_url: str,
+        count: int,
+        workers: int = 3,
+        decline_rate: float = 0.0,
+        record: bool = False,
+        clock_start: float | None = None,
+    ):
+        self.count = count
+        self.clock_start = clock_start if clock_start is not None else time.monotonic()
+        self.driver_ids: list[str] = []
+        self._workers: list[tuple[multiprocessing.Process, object]] = []
+        ctx = multiprocessing.get_context("spawn")
+        workers = max(1, min(workers, count))
+        bounds = [round(i * count / workers) for i in range(workers + 1)]
+        for index, (first, last) in enumerate(pairwise(bounds)):
+            parent, child = ctx.Pipe()
+            kwargs = {
+                "location_url": location_url,
+                "ride_url": ride_url,
+                "count": last - first,
+                "first_index": first,
+                "seed": 42 + index,
+                "decline_rate": decline_rate,
+                "clock_start": self.clock_start,
+            }
+            proc = ctx.Process(
+                target=_fleet_worker,
+                args=(child, kwargs, record),
+                name=f"fleet-{index}",
+                daemon=True,
+            )
+            self._workers.append((proc, parent))
 
     def start(self) -> None:
-        self._thread.start()
-        self._started.wait(timeout=30)
+        for proc, _ in self._workers:
+            proc.start()
+        for _, conn in self._workers:
+            command, ids = conn.recv()
+            assert command == "started"
+            self.driver_ids.extend(ids)
 
     def pause(self, driver_id: str) -> None:
-        self.loop.call_soon_threadsafe(self.fleet.pause, driver_id)
+        for _, conn in self._workers:
+            conn.send(("pause", driver_id))
 
-    def stop(self) -> None:
-        future = asyncio.run_coroutine_threadsafe(self.fleet.stop(), self.loop)
-        future.result(timeout=30)
-        self.loop.call_soon_threadsafe(self.loop.stop)
-        self._thread.join(timeout=10)
+    def stop(self) -> FleetReport:
+        report = FleetReport()
+        for _, conn in self._workers:
+            conn.send(("stop", None))
+        for proc, conn in self._workers:
+            command, part = conn.recv()
+            assert command == "report"
+            report.merge(part)
+            proc.join(timeout=10)
+        return report
 
 
 async def run(count: int, duration_s: float, interval_s: float, decline_rate: float) -> None:
