@@ -139,8 +139,47 @@ offline or its next trip completes, which is the one liability of using two
 stores without a distributed transaction. A reconciliation sweep that releases
 busy drivers whose `trip_id` has no matching trip would close that gap.
 
-Trip completion (`POST /rides/{id}/complete`) flips the driver back to
-`available` in DynamoDB and mirrors the status into `drivers`.
+Trip completion (`POST /rides/{id}/complete`, or the driver's ping at the
+dropoff) flips the driver back to `available` in DynamoDB and mirrors the
+status into `drivers`.
+
+## Trip lifecycle from position reports
+
+```
+requested --match--> matched --ping--> en_route --ping <=40m of pickup--> arrived
+                                                                            |
+        completed <--ping <=40m of dropoff-- in_trip <--ping >=120m from pickup--+
+```
+
+After the match the trip is moved along by the assigned driver's pings, not
+by client calls. The driver_location service, having stored a ping from a
+`busy` driver, loads the trip named in the item's `trip_id`, checks the
+trip's `driver_id` matches (a stale claim is ignored) and runs
+`trips.advance_from_position` in one PostgreSQL transaction. Distances are
+L1 (north-south plus east-west), the shape of a drive on a grid. The
+thresholds are deliberately asymmetric: arrival triggers inside 40 m, but the
+car has to get 120 m away before the rider counts as aboard, so a driver
+circling a block for parking does not flip the trip to `in_trip` and back.
+
+If PostgreSQL is unavailable the ping is still stored and the error is logged;
+the driver's position must never be lost because the trip database blinked.
+The rider-side endpoints (`start`, `complete`, `cancel`) remain as manual
+overrides and for clients without a driver app.
+
+## Pickup ETA
+
+`GET /rides/{id}` reads the driver's item from DynamoDB on every call, so the
+position and ETA are as fresh as the last ping. The ETA is
+
+    L1 distance to pickup / max(speed, 3 m/s) + 15 s
+
+`speed_mps` is tracked in the driver item: each ping computes the haversine
+distance from the previous stored position divided by the elapsed time,
+clamps it at 50 m/s (a jump, not a drive) and blends it with the previous
+value at 50/50. The floor keeps a parked driver's ETA finite; the 15 s
+covers pull-over and door time. `tests/test_lifecycle.py` drives a simulated
+car across the grid and requires the ETA taken early in the drive to land
+within 15% of the measured time.
 
 ## Throughput
 

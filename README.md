@@ -7,8 +7,8 @@ on a laptop.
 
 | service | port | stores | job |
 | --- | --- | --- | --- |
-| `driver_location` | 8001 | DynamoDB | ingest driver pings, answer "who is near this point" |
-| `ride_request` | 8002 | PostgreSQL, DynamoDB | create trips, expose their lifecycle, release drivers on completion |
+| `driver_location` | 8001 | DynamoDB, PostgreSQL | ingest driver pings, answer "who is near this point", move a busy driver's trip along |
+| `ride_request` | 8002 | PostgreSQL, DynamoDB | create trips, expose their lifecycle with the driver's position and pickup ETA, release drivers on completion |
 | `dispatch` | 8003 | PostgreSQL, DynamoDB | match requested trips to the nearest available driver, report throughput |
 | `web` | 5173 | | rider map: drivers, pickup pin, request, matched driver approaching |
 
@@ -92,8 +92,10 @@ Tests cover geohash vectors and neighbors, haversine, input validation, the
 TTL attribute and read-side expiry filter, cell changes carrying dispatch
 status, the matcher's nearest-first choice and expanding-radius fallback,
 conditional claims under concurrent matchers, the trip lifecycle with its event
-trail, migrations up and down, and an in-process run of 500 trips that must
-sustain at least 500 matches per minute. CI (`.github/workflows/ci.yml`) runs
+trail, the position-driven en_route / arrived / in_trip / completed
+progression, the pickup ETA against a simulated grid drive (within 15%),
+migrations up and down including the enum rebuild, and an in-process run of
+500 trips that must sustain at least 500 matches per minute. CI (`.github/workflows/ci.yml`) runs
 the same steps with a `postgres:16` service container and a separate job for
 the web app.
 
@@ -117,7 +119,7 @@ the web app.
 
 | method | path | notes |
 | --- | --- | --- |
-| `POST` | `/drivers/{id}/position` | body `{lat, lng, heading}`; upserts the cell item, refreshes `ttl`, keeps dispatch status |
+| `POST` | `/drivers/{id}/position` | body `{lat, lng, heading}`; upserts the cell item, refreshes `ttl`, keeps dispatch status, updates the smoothed `speed_mps`; a busy driver's ping also advances its trip (see lifecycle below) |
 | `GET` | `/drivers/nearby?lat&lng&radius_m&status&limit` | drivers within `radius_m` (max 10 km), nearest first, expired excluded |
 | `GET` | `/drivers/{id}` | current position and status |
 | `PUT` | `/drivers/{id}/status?status=` | `available`, `busy` or `offline` |
@@ -128,11 +130,27 @@ the web app.
 | method | path | notes |
 | --- | --- | --- |
 | `POST` | `/rides` | body `{rider_id, pickup: {lat, lng}, dropoff: {lat, lng}}`; returns the trip with status `requested` |
-| `GET` | `/rides/{id}` | trip with its `events` |
-| `GET` | `/rides?status&limit` | recent trips |
-| `POST` | `/rides/{id}/start` | `matched` to `en_route` |
-| `POST` | `/rides/{id}/complete` | `matched`/`en_route` to `completed`; frees the driver |
-| `POST` | `/rides/{id}/cancel` | `requested`/`matched`/`en_route` to `cancelled`; frees the driver |
+| `GET` | `/rides/{id}` | trip with its `events`, plus `driver_position` (lat, lng, heading, speed_mps, distance_to_pickup_m, updated_at) and `pickup_eta_s` while a driver is assigned |
+| `GET` | `/rides?status&limit` | recent trips (no driver position lookup) |
+| `POST` | `/rides/{id}/start` | `matched` to `en_route` (rider-side shortcut; pings do this on their own) |
+| `POST` | `/rides/{id}/complete` | any active state to `completed`; frees the driver |
+| `POST` | `/rides/{id}/cancel` | `requested`/`matched`/`en_route`/`arrived` to `cancelled`; frees the driver |
+
+Trip lifecycle: `requested` -> `matched` -> `en_route` -> `arrived` ->
+`in_trip` -> `completed`, with `cancelled` reachable from every state before
+the rider is aboard. The transitions after `matched` are driven by the
+assigned driver's position reports: the first ping after the match sets
+`en_route`, a ping within 40 m (route distance) of the pickup sets `arrived`,
+pulling 120 m away from the pickup again sets `in_trip`, and a ping within
+40 m of the dropoff sets `completed` and releases the driver. Every hop is
+timestamped (`matched_at`, `arrived_at`, `started_at`, `completed_at`) and
+recorded in `events`.
+
+The pickup ETA is `route_distance / speed + 15 s`, where route distance is the
+north-south plus east-west (L1) distance, which is what a car on a street grid
+actually drives, and speed is an exponentially smoothed estimate from the
+driver's last pings, floored at 3 m/s so a parked driver still gets a finite
+ETA.
 
 ### dispatch (8003)
 
@@ -146,14 +164,16 @@ All three expose `GET /healthz` and interactive docs at `/docs`.
 
 DynamoDB `driver_positions`: partition key `cell` (geohash precision 5), sort
 key `driver_id`, attributes `geohash` (precision 6), `lat`, `lng`, `heading`,
-`status`, `trip_id`, `updated_at`, `ttl` (TTL attribute), GSI `by_driver`.
+`speed_mps`, `status`, `trip_id`, `updated_at`, `ttl` (TTL attribute), GSI
+`by_driver`.
 
-PostgreSQL (Alembic revision `0001`):
+PostgreSQL (Alembic revisions `0001`, `0002`):
 
 ```
 trips        id uuid pk, rider_id, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng,
-             status trip_status, driver_id, requested_at, matched_at, completed_at,
-             match_latency_ms, dispatch_attempts, next_attempt_at
+             status trip_status, driver_id, requested_at, matched_at, arrived_at,
+             started_at, completed_at, match_latency_ms, pickup_eta_s,
+             dispatch_attempts, next_attempt_at
              index (status), (requested_at), (status, next_attempt_at)
 drivers      id pk, name, status, created_at
 ride_events  id pk, trip_id -> trips.id on delete cascade, event, at
@@ -173,6 +193,19 @@ scripts/           create_tables.py
 tests/             pytest suite
 web/               Vite + React + TypeScript rider map
 ```
+
+## Releases
+
+- **v2.0.0** Trip lifecycle and ETA. New `arrived` and `in_trip` states
+  (Alembic `0002`, with a downgrade that rebuilds the enum). The
+  driver_location service advances a busy driver's trip from its pings and
+  releases the driver at the dropoff. `GET /rides/{id}` returns the driver's
+  live position and a pickup ETA from grid route distance and the smoothed
+  observed speed. The simulated drivers now drive to the pickup, wait, and
+  carry on to the dropoff.
+- **v1.0.0** Geohash-partitioned DynamoDB driver index with TTL expiry,
+  PostgreSQL trips through Alembic, nearest-driver matcher with atomic claims
+  and expanding radius, 500 matches per minute floor, React rider map.
 
 ## License
 

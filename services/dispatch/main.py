@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from rideloop_common import trips
+from rideloop_common import __version__, trips
 from rideloop_common.config import get_settings
 from rideloop_common.db import make_engine, make_session_factory
 from rideloop_common.dynamo import DriverPositionStore
@@ -50,7 +50,7 @@ async def lifespan(_: FastAPI):
         worker.join(timeout=5)
 
 
-app = FastAPI(title="RideLoop dispatch", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="RideLoop dispatch", version=__version__, lifespan=lifespan)
 add_common_routes(app, "dispatch")
 
 

@@ -10,7 +10,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from rideloop_common import trips
+from rideloop_common import __version__, trips
 from rideloop_common.config import get_settings
 from rideloop_common.db import make_engine, make_session_factory
 from rideloop_common.dynamo import DriverPositionStore
@@ -37,7 +37,7 @@ def get_session() -> Iterator[Session]:
 DB = Annotated[Session, Depends(get_session)]
 Store = Annotated[DriverPositionStore, Depends(get_store)]
 
-app = FastAPI(title="RideLoop ride request", version="0.1.0")
+app = FastAPI(title="RideLoop ride request", version=__version__)
 add_common_routes(app, "ride_request")
 
 

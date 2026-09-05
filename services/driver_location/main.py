@@ -16,7 +16,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException, Query
 from sqlalchemy.orm import sessionmaker
 
-from rideloop_common import trips
+from rideloop_common import __version__, trips
 from rideloop_common.config import get_settings
 from rideloop_common.db import make_engine, make_session_factory
 from rideloop_common.dynamo import DriverPositionStore, ensure_table_with_retry
@@ -54,7 +54,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="RideLoop driver location", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="RideLoop driver location", version=__version__, lifespan=lifespan)
 add_common_routes(app, "driver_location")
 
 
