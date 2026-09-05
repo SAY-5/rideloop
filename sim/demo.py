@@ -11,12 +11,14 @@ import asyncio
 import statistics
 import time
 from datetime import datetime
+from pathlib import Path
 
 import httpx
 
 from rideloop_common.config import get_settings
 from sim.city import CITY_CENTER
 from sim.drivers import DriverFleet, FleetThread
+from sim.replay import Recorder, Summary, fingerprint, percentile
 from sim.riders import RiderLoad
 
 MAP_RADIUS_M = 4500.0
@@ -60,15 +62,9 @@ def parse_ts(value: str) -> float:
     return datetime.fromisoformat(value).timestamp()
 
 
-def percentile(values: list[int], pct: float) -> float:
-    if not values:
-        return float("nan")
-    ordered = sorted(values)
-    index = min(len(ordered) - 1, max(0, round(pct / 100 * (len(ordered) - 1))))
-    return float(ordered[index])
-
-
-async def run(drivers: int, rate: float, duration: float, decline_rate: float) -> int:
+async def run(
+    drivers: int, rate: float, duration: float, decline_rate: float, record: Path | None = None
+) -> int:
     settings = get_settings()
     loc, ride, dispatch = (
         settings.driver_location_url,
@@ -80,7 +76,8 @@ async def run(drivers: int, rate: float, duration: float, decline_rate: float) -
         await wait_healthy(client, [loc, ride, dispatch])
 
         print(f"seeding {drivers} drivers...")
-        fleet = DriverFleet(loc, ride, drivers, decline_rate=decline_rate)
+        recorder = Recorder(drivers=drivers) if record else None
+        fleet = DriverFleet(loc, ride, drivers, decline_rate=decline_rate, recorder=recorder)
         fleet_thread = FleetThread(fleet)
         fleet_thread.start()
         deadline = time.monotonic() + 60
@@ -101,7 +98,7 @@ async def run(drivers: int, rate: float, duration: float, decline_rate: float) -
         print(f"driver {probe} stopped pinging (ttl in {ttl_window}s)")
 
         print(f"submitting rides at {rate:g}/s for {duration:g}s...")
-        load = RiderLoad(ride, rate, duration)
+        load = RiderLoad(ride, rate, duration, recorder=recorder, clock_start=fleet.started_at)
         rider_task = asyncio.create_task(load.run())
 
         await asyncio.sleep(3)
@@ -175,6 +172,21 @@ async def run(drivers: int, rate: float, duration: float, decline_rate: float) -
         f"-> {'expired as expected' if ttl_ok else 'UNEXPECTED'}"
     )
     print("=======================================================")
+    if recorder is not None and record is not None:
+        summary = Summary(
+            rides=len(records),
+            matched=len(matched),
+            unmatched=len(records) - len(matched),
+            matches_per_minute=round(per_minute, 1),
+            p50_latency_ms=percentile(latencies, 50),
+            p95_latency_ms=percentile(latencies, 95),
+            fingerprint=fingerprint(
+                (r.trip["rider_id"], r.trip.get("driver_id"), r.trip.get("match_latency_ms"))
+                for r in records
+            ),
+        )
+        recorder.write(record, summary)
+        print(f"recorded {len(recorder.events)} events and the summary to {record}")
     return 0 if (ttl_ok and matched) else 1
 
 
@@ -184,8 +196,11 @@ def main() -> None:
     parser.add_argument("--rate", type=float, default=10.0)
     parser.add_argument("--duration", type=float, default=60.0)
     parser.add_argument("--decline-rate", type=float, default=0.1)
+    parser.add_argument("--record", type=Path, help="write the ride stream for sim.replay")
     args = parser.parse_args()
-    raise SystemExit(asyncio.run(run(args.drivers, args.rate, args.duration, args.decline_rate)))
+    raise SystemExit(
+        asyncio.run(run(args.drivers, args.rate, args.duration, args.decline_rate, args.record))
+    )
 
 
 if __name__ == "__main__":

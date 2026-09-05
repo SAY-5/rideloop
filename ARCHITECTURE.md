@@ -237,6 +237,51 @@ The multiplier a rider was quoted is stored on the trip
 (`surge_multiplier`), so the price is fixed at request time even though the
 cell's multiplier keeps moving.
 
+## Observability
+
+Metrics live in `rideloop_common/metrics.py` and are incremented where the
+event happens: the matcher counts matches, observes the latency it just
+wrote to the trip, and counts trips it could not place; the DynamoDB store
+counts a claim conflict whenever the conditional `try_mark_busy` fails and a
+TTL expiry whenever a read drops an expired row; the ride_request service
+counts offer outcomes. `services/common.py` adds a middleware that counts and
+times every request by route template, and `GET /metrics` renders the
+registry. The driver_location and ride_request containers run two uvicorn
+workers, so the Dockerfiles set `PROMETHEUS_MULTIPROC_DIR` and the render
+step aggregates across processes.
+
+Expired rows used to be filtered by a server-side `FilterExpression`, which
+made them invisible and therefore uncountable. The read path now asks for
+the partition (still filtered by subcell) and checks `ttl` itself; an
+expired row is deleted with `ConditionExpression: ttl = :seen`, so a driver
+whose fresh ping landed between the read and the delete is not touched. The
+delete costs one write per expired driver, once, and means the counter is a
+true count of expiries rather than of reads that happened to see one.
+
+`rideloop_matches_per_minute` is a gauge fed by the sweep loop's own
+trailing-minute deque rather than a PromQL `rate()`, so it reads correctly
+on a single scrape and matches the number the demo prints.
+
+## Replay
+
+`sim/replay.py` turns a ride stream into a regression test. The file is
+JSON lines: a header, then `position` and `ride` events with a relative
+`t`, then a `summary`. `replay()` walks the events on a virtual clock rooted
+at the wall time the run starts: positions are written with `now = base + t`
+and a long TTL so drift between virtual and real time cannot expire them,
+each ride is inserted and immediately followed by `Matcher.run_once(now)`,
+open offers are accepted on the spot and a completion is scheduled
+`RIDE_DURATION_S` later so drivers cycle back into the pool. The matcher is
+deterministic (nearest first, ties by driver id through the stable sort), so
+the same file yields the same assignments; the summary carries a sha256
+fingerprint of `(rider, driver, latency)` triples and `run` exits 1 when a
+later replay disagrees with it.
+
+`sim.demo --record` writes the live stream of a demo run together with the
+live match count. Replaying a live recording is sequential where the live
+run was concurrent, so its numbers are a reference rather than a guarantee;
+the synthesized streams (`make replay`) are the ones that reproduce exactly.
+
 ## Throughput
 
 `tests/test_throughput.py` runs the matcher in-process against moto and a real

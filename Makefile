@@ -1,4 +1,4 @@
-.PHONY: setup lint test test-db migrate tables demo demo-down web web-build
+.PHONY: setup lint test test-db migrate tables demo demo-down replay web web-build
 
 UV ?= uv
 TEST_PG_PORT ?= 5434
@@ -37,6 +37,12 @@ demo:
 
 demo-down:
 	docker compose down -v
+
+## Deterministic regression check: synthesize a ride stream, replay it twice, compare.
+replay:
+	DATABASE_URL=$(TEST_DATABASE_URL) $(UV) run python -m sim.replay synth --seed 7 --out ride-stream.jsonl
+	DATABASE_URL=$(TEST_DATABASE_URL) $(UV) run python -m sim.replay run ride-stream.jsonl --in-memory --write-summary
+	DATABASE_URL=$(TEST_DATABASE_URL) $(UV) run python -m sim.replay run ride-stream.jsonl --in-memory
 
 web:
 	cd web && pnpm dev

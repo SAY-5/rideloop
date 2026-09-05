@@ -97,10 +97,12 @@ trail, the position-driven en_route / arrived / in_trip / completed
 progression, the pickup ETA against a simulated grid drive (within 15%),
 migrations up and down including the enum rebuild, the surge multiplier
 climbing over a burst of requests in one cell and cooling off with the
-half-life, the heatmap ordering, offers that must be accepted before pings move the trip,
-declines and timeouts releasing the claim and rematching without the
-decliner, and an in-process run of 500 trips that must sustain at least 500
-matches per minute. CI (`.github/workflows/ci.yml`) runs
+half-life, the heatmap ordering, offers that must be accepted before pings
+move the trip, declines and timeouts releasing the claim and rematching
+without the decliner, the Prometheus counters after a sweep, a claim race and
+an expiry, a replayed stream reproducing its own matches and fingerprint, and
+an in-process run of 500 trips that must sustain at least 500 matches per
+minute. CI (`.github/workflows/ci.yml`) runs
 the same steps with a `postgres:16` service container and a separate job for
 the web app.
 
@@ -184,7 +186,53 @@ cell. The multiplier is 1.0 while demand does not exceed supply and otherwise
 Nothing is counted incrementally: both numbers are read from the stores at
 request time.
 
-All three expose `GET /healthz` and interactive docs at `/docs`.
+All three expose `GET /healthz`, Prometheus `GET /metrics` and interactive
+docs at `/docs`.
+
+## Metrics
+
+Every service serves `GET /metrics` in the Prometheus text format
+(`prometheus-client`; the containers run two uvicorn workers and aggregate
+through `PROMETHEUS_MULTIPROC_DIR`). HTTP requests are counted and timed per
+service, method and route (`rideloop_http_requests_total`,
+`rideloop_http_request_seconds`). The dispatcher's counters:
+
+| metric | meaning |
+| --- | --- |
+| `rideloop_matches_total` | trips matched to a driver |
+| `rideloop_match_latency_seconds` | histogram of request-to-match latency |
+| `rideloop_matches_per_minute` | matches in the trailing 60 s, from the sweep loop |
+| `rideloop_unmatched_total` | sweeps that found no claimable driver for a trip (the trip is retried) |
+| `rideloop_claim_conflicts_total` | conditional claims that lost to a concurrent matcher or an expired driver |
+| `rideloop_ttl_expiries_total` | expired driver rows the read path dropped and deleted |
+| `rideloop_offers_total{outcome}` | `accepted`, `declined`, `timed_out` |
+| `rideloop_dispatch_sweeps_total`, `rideloop_positions_total`, `rideloop_rides_total` | work counters |
+
+TTL expiry is observable because the nearby query filters `ttl` on the
+client and deletes an expired row on first sight with a conditional delete
+(`ttl` unchanged), so each expiry is counted exactly once even though
+DynamoDB's own sweep may lag by minutes.
+
+## Replay
+
+`sim/replay.py` records a ride stream (driver position reports and ride
+requests with relative timestamps, JSON lines) and replays it through the
+matcher on a virtual clock, so the same file produces the same matches, the
+same rider-to-driver assignments and the same latencies every run. The
+summary line carries a fingerprint of the assignments; a second run compares
+against it and exits 1 on any drift, which turns a matcher change into a
+one-command regression check.
+
+```
+make replay                                   # synthesize, replay, replay again and compare
+uv run python -m sim.replay synth --seed 7 --drivers 60 --rate 3 --duration 30 --out s.jsonl
+uv run python -m sim.replay run s.jsonl --in-memory --write-summary
+uv run python -m sim.replay run s.jsonl --in-memory       # exit 1 if matches differ
+uv run python -m sim.demo --record live.jsonl             # record a real demo run
+```
+
+`--in-memory` uses an in-process DynamoDB (moto) so the check needs only
+PostgreSQL; without it the replay runs against `DYNAMODB_ENDPOINT`.
 
 ## Schema
 
@@ -213,10 +261,10 @@ partitioning, TTL handling and the matcher's concurrency model.
 ## Layout
 
 ```
-rideloop_common/   geohash, haversine, pydantic models, settings, DynamoDB store, SQLAlchemy schema, trip repository
+rideloop_common/   geohash, haversine, pydantic models, settings, DynamoDB store, SQLAlchemy schema, trip repository, eta, surge, metrics
 services/          driver_location, ride_request, dispatch (FastAPI apps, one Dockerfile each)
 migrations/        Alembic environment and revisions
-sim/               city grid, driver fleet, rider load, demo orchestrator
+sim/               city grid, driver fleet, rider load, demo orchestrator, ride stream replay
 scripts/           create_tables.py
 tests/             pytest suite
 web/               Vite + React + TypeScript rider map
@@ -224,6 +272,16 @@ web/               Vite + React + TypeScript rider map
 
 ## Releases
 
+The project grew in five tagged releases, each with its own migration, tests
+and GitHub release notes.
+
+- **v5.0.0** Observability and replay. Prometheus `GET /metrics` on every
+  service: matches, match latency histogram, matches per minute, unmatched
+  sweeps, claim conflicts, TTL expiries (the read path now deletes expired
+  rows on sight and counts them), offer outcomes and HTTP request counters.
+  `sim/replay.py` records a ride stream and replays it deterministically
+  through the matcher, with a fingerprinted summary for regression
+  comparison (`make replay`); `sim.demo --record` captures a live run.
 - **v4.0.0** Driver accept and decline. A match is an offer with a timeout;
   `POST /rides/{id}/accept` and `/decline` answer it, an unanswered offer
   times out in the dispatcher's sweep. Declines and timeouts release the claim

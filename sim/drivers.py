@@ -36,11 +36,14 @@ class DriverFleet:
         seed: int = 42,
         prefix: str = "drv",
         decline_rate: float = 0.0,
+        recorder=None,
     ):
         self.location_url = location_url.rstrip("/")
         self.ride_url = ride_url.rstrip("/")
         self.interval_s = interval_s
         self.decline_rate = decline_rate
+        self.recorder = recorder
+        self.started_at = time.monotonic()
         self.accepted = 0
         self.declined = 0
         rng = random.Random(seed)
@@ -92,6 +95,10 @@ class DriverFleet:
                     )
                     resp.raise_for_status()
                     self.posts += 1
+                    if self.recorder is not None:
+                        self.recorder.position(
+                            now - self.started_at, driver.driver_id, lat, lng, heading
+                        )
                     await self._follow_assignment(driver, resp.json())
                 except httpx.HTTPError as exc:
                     self.errors += 1

@@ -39,13 +39,23 @@ class RideRecord:
 
 
 class RiderLoad:
-    def __init__(self, ride_url: str, rate_per_s: float, duration_s: float, seed: int = 7):
+    def __init__(
+        self,
+        ride_url: str,
+        rate_per_s: float,
+        duration_s: float,
+        seed: int = 7,
+        recorder=None,
+        clock_start: float | None = None,
+    ):
         self.ride_url = ride_url.rstrip("/")
         self.rate = rate_per_s
         self.duration = duration_s
         self.rng = random.Random(seed)
         self.records: list[RideRecord] = []
         self.submit_errors = 0
+        self.recorder = recorder
+        self.clock_start = clock_start
 
     async def run(self) -> list[RideRecord]:
         limits = httpx.Limits(max_connections=64, max_keepalive_connections=64)
@@ -80,6 +90,9 @@ class RiderLoad:
             self.submit_errors += 1
             log.warning("submit failed: %s", exc)
             return None
+        if self.recorder is not None:
+            start = self.clock_start if self.clock_start is not None else 0.0
+            self.recorder.ride(time.monotonic() - start, body["rider_id"], pickup, dropoff)
         record = RideRecord(trip_id=resp.json()["id"], submitted_at=time.time())
         self.records.append(record)
         return record
