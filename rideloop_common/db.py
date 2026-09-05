@@ -8,6 +8,7 @@ from datetime import datetime
 from sqlalchemy import (
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -70,6 +71,8 @@ class Trip(Base):
     next_attempt_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    pickup_cell: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    surge_multiplier: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
 
     events: Mapped[list[RideEvent]] = relationship(
         back_populates="trip", cascade="all, delete-orphan", order_by="RideEvent.at"
@@ -79,6 +82,7 @@ class Trip(Base):
         Index("ix_trips_status", "status"),
         Index("ix_trips_requested_at", "requested_at"),
         Index("ix_trips_status_next_attempt", "status", "next_attempt_at"),
+        Index("ix_trips_pickup_cell_requested_at", "pickup_cell", "requested_at"),
     )
 
 

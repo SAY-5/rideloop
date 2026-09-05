@@ -419,6 +419,39 @@ class DriverPositionStore:
             grouped.setdefault(sub[:precision], []).append(sub)
         return [(parent, subs) for parent, subs in grouped.items()]
 
+    def count_available(self, cell: str, now: datetime | None = None) -> int:
+        """Available, unexpired drivers in one partition."""
+        now_epoch = int((now or datetime.now(UTC)).timestamp())
+        items = self._query_cell(cell, now_epoch)
+        return sum(1 for item in items if item.get("status") == DriverStatus.AVAILABLE.value)
+
+    def available_by_cell(self, now: datetime | None = None) -> dict[str, int]:
+        """Available, unexpired drivers per partition across the whole table.
+
+        This is a filtered scan: fine for a city-sized fleet and the heatmap's
+        refresh rate, and the one place the store reads more than a few
+        partitions at once.
+        """
+        now_epoch = int((now or datetime.now(UTC)).timestamp())
+        kwargs: dict[str, Any] = {
+            "ProjectionExpression": "#c",
+            "FilterExpression": "#s = :avail AND #ttl > :now",
+            "ExpressionAttributeNames": {"#c": "cell", "#s": "status", "#ttl": "ttl"},
+            "ExpressionAttributeValues": {
+                ":avail": DriverStatus.AVAILABLE.value,
+                ":now": now_epoch,
+            },
+        }
+        counts: dict[str, int] = {}
+        while True:
+            resp = self.table.scan(**kwargs)
+            for item in resp.get("Items", []):
+                counts[item["cell"]] = counts.get(item["cell"], 0) + 1
+            last = resp.get("LastEvaluatedKey")
+            if not last:
+                return counts
+            kwargs["ExclusiveStartKey"] = last
+
     def nearby(
         self,
         lat: float,

@@ -100,6 +100,8 @@ class Trip(BaseModel):
     match_latency_ms: int | None = None
     pickup_eta_s: int | None = None
     dispatch_attempts: int = 0
+    pickup_cell: str | None = None
+    surge_multiplier: float = 1.0
 
 
 class DriverLocation(BaseModel):
@@ -127,3 +129,20 @@ class DispatchStats(BaseModel):
     p95_match_latency_ms: float | None
     sweeps: int
     uptime_s: float
+
+
+class SurgeCell(BaseModel):
+    """Demand against supply in one geohash cell and the multiplier that follows."""
+
+    cell: str
+    demand: float
+    supply: int
+    multiplier: float
+    lat: float
+    lng: float
+
+
+class Heatmap(BaseModel):
+    at: datetime
+    half_life_s: float
+    cells: list[SurgeCell]

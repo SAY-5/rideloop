@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     dispatch_max_radius_m: float = 4000.0
     dispatch_retry_delay_s: float = 1.0
 
+    # Surge pricing
+    surge_half_life_s: float = 60.0
+    surge_step: float = 0.5
+    surge_max_multiplier: float = 3.0
+
 
 @lru_cache
 def get_settings() -> Settings:

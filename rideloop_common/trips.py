@@ -32,7 +32,13 @@ class InvalidTransition(ValueError):
     pass
 
 
-def create_trip(session: Session, request: RideRequest, now: datetime | None = None) -> Trip:
+def create_trip(
+    session: Session,
+    request: RideRequest,
+    now: datetime | None = None,
+    pickup_cell: str | None = None,
+    surge_multiplier: float = 1.0,
+) -> Trip:
     """Insert a trip in ``requested`` state. The row itself is the dispatch queue entry."""
     now = now or datetime.now(UTC)
     trip = Trip(
@@ -45,6 +51,8 @@ def create_trip(session: Session, request: RideRequest, now: datetime | None = N
         status=TripStatus.REQUESTED,
         requested_at=now,
         next_attempt_at=now,
+        pickup_cell=pickup_cell,
+        surge_multiplier=surge_multiplier,
     )
     trip.events.append(RideEvent(event="requested", at=now))
     session.add(trip)
