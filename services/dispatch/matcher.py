@@ -5,12 +5,13 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.orm import sessionmaker
 
-from rideloop_common import trips
+from rideloop_common import metrics, trips
 from rideloop_common.db import Trip
 from rideloop_common.dynamo import DriverPositionStore
 from rideloop_common.models import DriverStatus, NearbyDriver
@@ -44,7 +45,16 @@ class MatcherStats:
     matched: int = 0
     deferred: int = 0
     timed_out: int = 0
+    recent: deque[float] = field(default_factory=deque)
     lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def record_matches(self, count: int, at: float | None = None) -> float:
+        """Add matches at monotonic time ``at`` and return the trailing-minute rate."""
+        at = time.monotonic() if at is None else at
+        self.recent.extend([at] * count)
+        while self.recent and self.recent[0] < at - 60:
+            self.recent.popleft()
+        return float(len(self.recent))
 
 
 class Matcher:
@@ -67,7 +77,12 @@ class Matcher:
         self.stats = MatcherStats()
 
     def find_driver(
-        self, lat: float, lng: float, trip_id: str, exclude: set[str] | None = None
+        self,
+        lat: float,
+        lng: float,
+        trip_id: str,
+        exclude: set[str] | None = None,
+        now: datetime | None = None,
     ) -> MatchOutcome:
         """Widen the search ring until a driver is claimed or the cap is reached.
 
@@ -79,7 +94,9 @@ class Matcher:
         seen = 0
         tried: set[str] = set(exclude or ())
         for radius in self.radii:
-            candidates = self.store.nearby(lat, lng, radius, statuses={DriverStatus.AVAILABLE})
+            candidates = self.store.nearby(
+                lat, lng, radius, statuses={DriverStatus.AVAILABLE}, now=now
+            )
             for candidate in candidates:
                 if candidate.driver_id in tried:
                     continue
@@ -92,12 +109,15 @@ class Matcher:
     def dispatch_trip(self, session, trip: Trip, now: datetime | None = None) -> bool:
         now = now or datetime.now(UTC)
         outcome = self.find_driver(
-            trip.pickup_lat, trip.pickup_lng, str(trip.id), exclude=set(trip.declined_by)
+            trip.pickup_lat, trip.pickup_lng, str(trip.id), exclude=set(trip.declined_by), now=now
         )
         if outcome.driver is None:
             trips.defer_trip(session, trip, self.retry_delay, now=now)
+            metrics.UNMATCHED.inc()
             return False
         trips.mark_matched(session, trip, outcome.driver.driver_id, now=now)
+        metrics.MATCHES.inc()
+        metrics.MATCH_LATENCY.observe((trip.match_latency_ms or 0) / 1000)
         log.debug(
             "matched trip %s to %s at %.0fm after %d candidates",
             trip.id,
@@ -117,17 +137,18 @@ class Matcher:
         for trip_id, driver_id in expired:
             if not self.store.release_claim(driver_id, str(trip_id)):
                 log.warning("driver %s was no longer claimed by trip %s", driver_id, trip_id)
+        metrics.OFFERS.labels("timed_out").inc(len(expired))
         return len(expired)
 
-    def run_once(self) -> int:
+    def run_once(self, now: datetime | None = None) -> int:
         """One sweep: expire stale offers, claim a batch of pending trips and try to
-        match each. Returns matches."""
-        timed_out = self.expire_offers()
+        match each. Returns matches. ``now`` lets a replay drive a virtual clock."""
+        timed_out = self.expire_offers(now=now)
         matched = 0
         deferred = 0
         with self.session_factory() as session, session.begin():
-            for trip in trips.claim_pending(session, self.batch_size):
-                if self.dispatch_trip(session, trip):
+            for trip in trips.claim_pending(session, self.batch_size, now=now):
+                if self.dispatch_trip(session, trip, now=now):
                     matched += 1
                 else:
                     deferred += 1
@@ -136,6 +157,8 @@ class Matcher:
             self.stats.matched += matched
             self.stats.deferred += deferred
             self.stats.timed_out += timed_out
+            metrics.MATCHES_PER_MINUTE.set(self.stats.record_matches(matched))
+        metrics.SWEEPS.inc()
         return matched
 
     def run_forever(self, poll_interval_s: float, stop: threading.Event) -> None:

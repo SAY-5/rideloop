@@ -27,7 +27,7 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError, EndpointConnectionError
 
-from rideloop_common import geohash
+from rideloop_common import geohash, metrics
 from rideloop_common.config import Settings, get_settings
 from rideloop_common.geo import haversine_m, offset_m
 from rideloop_common.models import DriverPosition, DriverStatus, NearbyDriver, utcnow
@@ -229,6 +229,7 @@ class DriverPositionStore:
                         ":ttl": base["ttl"],
                     },
                 )
+                metrics.POSITIONS.inc()
                 return DriverPosition(
                     driver_id=driver_id,
                     cell=cell,
@@ -255,6 +256,7 @@ class DriverPositionStore:
                 item["trip_id"] = current.trip_id
             if current is None:
                 self.table.put_item(Item=item)
+                metrics.POSITIONS.inc()
                 return _item_to_position(item)
             try:
                 self.raw_client.transact_write_items(
@@ -281,6 +283,7 @@ class DriverPositionStore:
                         },
                     ]
                 )
+                metrics.POSITIONS.inc()
                 return _item_to_position(item)
             except ClientError as exc:
                 if exc.response["Error"]["Code"] != "TransactionCanceledException":
@@ -305,6 +308,7 @@ class DriverPositionStore:
             return True
         except ClientError as exc:
             if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                metrics.CLAIM_CONFLICTS.inc()
                 return False
             raise
 
@@ -375,31 +379,53 @@ class DriverPositionStore:
         self, cell: str, now_epoch: int, subcells: list[str] | None = None
     ) -> list[dict[str, Any]]:
         """Read one partition, dropping expired rows and (optionally) rows outside
-        the precision-6 subcells that intersect the search area."""
+        the precision-6 subcells that intersect the search area.
+
+        Expired rows are filtered here rather than server-side so they can be
+        counted and deleted: DynamoDB's own TTL sweep can lag by minutes, and
+        an item removed on first sight is never read again.
+        """
         items: list[dict[str, Any]] = []
-        names = {"#c": "cell", "#ttl": "ttl"}
-        values: dict[str, Any] = {":c": cell, ":now": now_epoch}
-        filter_expr = "#ttl > :now"
+        names = {"#c": "cell"}
+        values: dict[str, Any] = {":c": cell}
+        kwargs: dict[str, Any] = {
+            "KeyConditionExpression": "#c = :c",
+            "ExpressionAttributeNames": names,
+            "ExpressionAttributeValues": values,
+        }
         if subcells:
             placeholders = []
             for i, sub in enumerate(subcells):
                 values[f":g{i}"] = sub
                 placeholders.append(f":g{i}")
             names["#g"] = "geohash"
-            filter_expr += f" AND #g IN ({', '.join(placeholders)})"
-        kwargs: dict[str, Any] = {
-            "KeyConditionExpression": "#c = :c",
-            "FilterExpression": filter_expr,
-            "ExpressionAttributeNames": names,
-            "ExpressionAttributeValues": values,
-        }
+            kwargs["FilterExpression"] = f"#g IN ({', '.join(placeholders)})"
         while True:
             resp = self.table.query(**kwargs)
-            items.extend(resp.get("Items", []))
+            for item in resp.get("Items", []):
+                if int(item["ttl"]) > now_epoch:
+                    items.append(item)
+                else:
+                    self._expire(item)
             last = resp.get("LastEvaluatedKey")
             if not last:
                 return items
             kwargs["ExclusiveStartKey"] = last
+
+    def _expire(self, item: dict[str, Any]) -> None:
+        """Delete an expired row unless a fresh ping has replaced it meanwhile."""
+        try:
+            self.table.delete_item(
+                Key={"cell": item["cell"], "driver_id": item["driver_id"]},
+                ConditionExpression="#ttl = :seen",
+                ExpressionAttributeNames={"#ttl": "ttl"},
+                ExpressionAttributeValues={":seen": item["ttl"]},
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            return
+        metrics.TTL_EXPIRIES.inc()
 
     def _query_plan(
         self, lat: float, lng: float, radius_m: float

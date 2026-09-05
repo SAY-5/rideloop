@@ -10,7 +10,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from rideloop_common import __version__, surge, trips
+from rideloop_common import __version__, metrics, surge, trips
 from rideloop_common.config import get_settings
 from rideloop_common.db import make_engine, make_session_factory
 from rideloop_common.dynamo import DriverPositionStore
@@ -91,6 +91,7 @@ def create_ride(request: RideRequest, session: DB, store: Store) -> TripDetail:
         session, request, pickup_cell=cell, surge_multiplier=pricing.multiplier
     )
     session.commit()
+    metrics.RIDES.inc()
     return _detail(trips.get_trip(session, trip.id))
 
 
@@ -155,6 +156,7 @@ def accept_ride(trip_id: uuid.UUID, driver_id: str, session: DB, store: Store) -
     except trips.InvalidTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     session.commit()
+    metrics.OFFERS.labels("accepted").inc()
     return _with_driver(trips.get_trip(session, trip_id), store)
 
 
@@ -169,6 +171,7 @@ def decline_ride(trip_id: uuid.UUID, driver_id: str, session: DB, store: Store) 
         raise HTTPException(status_code=409, detail=str(exc)) from None
     session.commit()
     store.release_claim(driver_id, str(trip_id))
+    metrics.OFFERS.labels("declined").inc()
     return _detail(trips.get_trip(session, trip_id))
 
 
