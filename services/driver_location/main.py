@@ -50,7 +50,7 @@ Sessions = Annotated[sessionmaker, Depends(get_session_factory)]
 async def lifespan(_: FastAPI):
     settings = get_settings()
     if settings.dynamodb_auto_create:
-        ensure_table_with_retry(settings)
+        ensure_table_with_retry(settings, timeout_s=settings.dynamodb_startup_timeout_s)
     yield
 
 

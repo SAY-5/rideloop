@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     position_ttl_seconds: int = 60
     cell_precision: int = 5
     dynamodb_auto_create: bool = True
+    dynamodb_startup_timeout_s: float = 120.0
 
     # PostgreSQL
     database_url: str = "postgresql+psycopg://rideloop:rideloop@localhost:5432/rideloop"

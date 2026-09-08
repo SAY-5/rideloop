@@ -18,6 +18,12 @@ services:
     command: ["-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb"]
     ports:
       - "${DYNAMODB_HOST_PORT:-8000}:8000"
+    healthcheck:
+      # any HTTP answer (DynamoDB returns 400 to a bare GET) means the JVM is listening
+      test: ["CMD-SHELL", "curl -s -o /dev/null http://localhost:8000/"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
 
   driver_location:
     build:
@@ -31,7 +37,7 @@ services:
       - "8001:8000"
     depends_on:
       dynamodb:
-        condition: service_started
+        condition: service_healthy
       postgres:
         condition: service_healthy
     healthcheck: &service_health
