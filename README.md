@@ -51,27 +51,30 @@ endpoint).
 $ make demo
 ...
 ================ RideLoop demo summary ================
-drivers seeded            300 (8092 position posts, 1 errors)
+drivers seeded            300 (14305 position posts, 3 errors)
 rides submitted           600 (10/s for 60s)
 rides matched             600 (100.0%)
 rides completed           600
 rides left requested      0
-matches per minute        601 (600 matches over 59.9s, first request to last match)
-match latency p50 / p95   59 ms / 101 ms (mean 57 ms)
-dispatch service stats    matched_total=1200 last_minute=520 p50=59.0 p95=101.0 sweeps=3491
-offers                    ...
-ttl expiry                driver drv-000 stopped at 22:01:27; visible after 3s: yes; visible after ttl (19s): no -> expired as expected
+matches per minute        586 (600 matches over 61.4s, first request to last match)
+match latency p50 / p95   62 ms / 1101 ms (mean 181 ms)
+offers                    600 accepted, 51 declined by drivers (decline rate 10%); 51 declines and 0 timeouts re-queued, 48 of the matched rides went through a rematch
+dispatch service stats    matched_total=600 last_minute=484 p50=63.0 p95=1243.0499999999968 sweeps=1165
+ttl expiry                driver drv-000 stopped at 15:16:15; visible after 3s: yes; visible after ttl (13s): no -> expired as expected
 =======================================================
 ```
 
 The demo compose file sets `POSITION_TTL_SECONDS=20` so the expiry is visible
 within the run; the service default is 60 s. The submission rate is the
-ceiling here, not the matcher: median match latency is well under 100 ms end
-to end, and the tail is the rides whose first driver declined and that went
-round the queue once more. DynamoDB Local serializes writes through SQLite,
-which is why 300 drivers post closer to 130 positions a second than 300; the
-services themselves are not the limit. While the stack is up, `curl
-localhost:8003/metrics` shows the same numbers as Prometheus counters.
+ceiling here, not the matcher: median match latency is around 60 ms end to
+end, and the p95 is the one ride in ten whose first driver declined and that
+went round the queue once more (about a second: the decline lands on the
+driver's next ping, the rematch on the next sweep). With the whole stack,
+DynamoDB Local and the load generator sharing one laptop the 300 drivers
+manage roughly 150 to 200 position posts a second rather than 300; the
+position endpoint on its own takes about 500 a second. While the stack is
+up, `curl localhost:8003/metrics` shows the same numbers as Prometheus
+counters.
 
 If 5432 or 8000 are taken on your machine:
 
