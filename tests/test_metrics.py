@@ -8,7 +8,7 @@ from prometheus_client.parser import text_string_to_metric_families
 
 from rideloop_common import metrics, trips
 from rideloop_common.geo import offset_m
-from rideloop_common.models import Coordinate, RideRequest
+from rideloop_common.models import Coordinate, DriverStatus, RideRequest
 from services.dispatch import main as dispatch_main
 from services.dispatch.matcher import Matcher
 from services.driver_location import main as location_main
@@ -160,12 +160,17 @@ def test_claim_conflicts_and_ttl_expiries_are_counted(store, session_factory):
         value(after, "rideloop_ttl_expiries_total")
         == value(before, "rideloop_ttl_expiries_total") + 1
     )
-    # the expired row was deleted on sight, so a second read does not count it again
+    # the expiry is stamped on the row, so a second read does not count it again
     store.nearby(lat, lng, 500, now=later)
     assert value(scrape(client), "rideloop_ttl_expiries_total") == value(
         after, "rideloop_ttl_expiries_total"
     )
-    assert store.get_driver("stale") is None
+    # the row itself is left for DynamoDB's sweep; a resumed driver keeps its status
+    assert store.get_driver("stale") is not None
+    pos = store.put_position("stale", *offset_m(lat, lng, 50, 0), ttl_seconds=1)
+    assert store.try_mark_busy(pos.cell, "stale", "t")
+    assert [d.driver_id for d in store.nearby(lat, lng, 500, now=later)] == ["c"]
+    assert store.get_driver("stale").status == DriverStatus.BUSY
 
 
 def test_trailing_minute_rate_drops_old_matches():

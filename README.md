@@ -39,10 +39,13 @@ on a laptop.
 
 Requires Docker, `uv` and Python 3.12. `make demo` builds the images, starts
 PostgreSQL, DynamoDB Local and the three services, seeds 300 simulated drivers
-that post a position every second, submits rides at 10 per second for 60
-seconds, rides each one to completion, and prints a summary. Every figure is
-read back from the running system (trip timestamps from PostgreSQL, fleet
-visibility from DynamoDB, the dispatch service's own stats endpoint).
+that post a position every second (spread over three worker processes so the
+load generator cannot starve itself), submits rides at 10 per second for 60
+seconds, has drivers accept the offers (and decline one in ten, to exercise
+the rematch), rides each one to completion, and prints a summary. Every
+figure is read back from the running system (trip timestamps from
+PostgreSQL, fleet visibility from DynamoDB, the dispatch service's own stats
+endpoint).
 
 ```
 $ make demo
@@ -63,7 +66,12 @@ ttl expiry                driver drv-000 stopped at 22:01:27; visible after 3s: 
 
 The demo compose file sets `POSITION_TTL_SECONDS=20` so the expiry is visible
 within the run; the service default is 60 s. The submission rate is the
-ceiling here, not the matcher: median match latency is around 60 ms end to end.
+ceiling here, not the matcher: median match latency is well under 100 ms end
+to end, and the tail is the rides whose first driver declined and that went
+round the queue once more. DynamoDB Local serializes writes through SQLite,
+which is why 300 drivers post closer to 130 positions a second than 300; the
+services themselves are not the limit. While the stack is up, `curl
+localhost:8003/metrics` shows the same numbers as Prometheus counters.
 
 If 5432 or 8000 are taken on your machine:
 
@@ -204,14 +212,16 @@ service, method and route (`rideloop_http_requests_total`,
 | `rideloop_matches_per_minute` | matches in the trailing 60 s, from the sweep loop |
 | `rideloop_unmatched_total` | sweeps that found no claimable driver for a trip (the trip is retried) |
 | `rideloop_claim_conflicts_total` | conditional claims that lost to a concurrent matcher or an expired driver |
-| `rideloop_ttl_expiries_total` | expired driver rows the read path dropped and deleted |
+| `rideloop_ttl_expiries_total` | expired driver rows the read path dropped, counted once per expiry |
 | `rideloop_offers_total{outcome}` | `accepted`, `declined`, `timed_out` |
 | `rideloop_dispatch_sweeps_total`, `rideloop_positions_total`, `rideloop_rides_total` | work counters |
 
 TTL expiry is observable because the nearby query filters `ttl` on the
-client and deletes an expired row on first sight with a conditional delete
-(`ttl` unchanged), so each expiry is counted exactly once even though
-DynamoDB's own sweep may lag by minutes.
+client and, on first sight of an expired row, stamps it with the ttl that
+lapsed (a conditional update that fails if the row was refreshed or already
+stamped), so each expiry is counted exactly once even though DynamoDB's own
+sweep may lag by minutes. The row itself is left for that sweep: a driver
+that resumes pinging keeps its dispatch status and trip.
 
 ## Replay
 

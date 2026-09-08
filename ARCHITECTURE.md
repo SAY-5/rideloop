@@ -250,13 +250,18 @@ registry. The driver_location and ride_request containers run two uvicorn
 workers, so the Dockerfiles set `PROMETHEUS_MULTIPROC_DIR` and the render
 step aggregates across processes.
 
-Expired rows used to be filtered by a server-side `FilterExpression`, which
-made them invisible and therefore uncountable. The read path now asks for
-the partition (still filtered by subcell) and checks `ttl` itself; an
-expired row is deleted with `ConditionExpression: ttl = :seen`, so a driver
-whose fresh ping landed between the read and the delete is not touched. The
-delete costs one write per expired driver, once, and means the counter is a
-true count of expiries rather than of reads that happened to see one.
+Expired rows used to be filtered by a server-side `FilterExpression`,
+which made them invisible and therefore uncountable. The read path now asks
+for the partition (still filtered by subcell) and checks `ttl` itself; the
+first read to see an expired row stamps it with `expired_ttl = ttl` under
+`ConditionExpression: ttl = :seen AND expired_ttl <> :seen`, so a row
+refreshed by a ping that landed in between is not touched and a row already
+stamped for this expiry is not counted twice. The row is deliberately not
+deleted: DynamoDB's own sweep removes it, and until then a driver that
+resumes pinging finds its item, status and trip intact instead of being
+recreated as available while a trip in PostgreSQL still names it. The stamp
+costs one write per expiry, once, and makes the counter a true count of
+expiries rather than of reads that happened to see one.
 
 `rideloop_matches_per_minute` is a gauge fed by the sweep loop's own
 trailing-minute deque rather than a PromQL `rate()`, so it reads correctly

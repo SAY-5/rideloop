@@ -382,8 +382,8 @@ class DriverPositionStore:
         the precision-6 subcells that intersect the search area.
 
         Expired rows are filtered here rather than server-side so they can be
-        counted and deleted: DynamoDB's own TTL sweep can lag by minutes, and
-        an item removed on first sight is never read again.
+        counted: DynamoDB's own TTL sweep can lag by minutes, and the read
+        side is the only place that notices the moment a driver goes stale.
         """
         items: list[dict[str, Any]] = []
         names = {"#c": "cell"}
@@ -413,11 +413,19 @@ class DriverPositionStore:
             kwargs["ExclusiveStartKey"] = last
 
     def _expire(self, item: dict[str, Any]) -> None:
-        """Delete an expired row unless a fresh ping has replaced it meanwhile."""
+        """Count an expiry once: stamp the row with the ttl that lapsed.
+
+        The row is left for DynamoDB's own TTL sweep rather than deleted here,
+        so a driver that resumes pinging keeps its dispatch status and trip.
+        The condition fails on a row already stamped for this ttl (counted
+        before) or refreshed by a newer ping (no longer expired).
+        """
         try:
-            self.table.delete_item(
+            self.table.update_item(
                 Key={"cell": item["cell"], "driver_id": item["driver_id"]},
-                ConditionExpression="#ttl = :seen",
+                UpdateExpression="SET expired_ttl = :seen",
+                ConditionExpression="#ttl = :seen AND (attribute_not_exists(expired_ttl) "
+                "OR expired_ttl <> :seen)",
                 ExpressionAttributeNames={"#ttl": "ttl"},
                 ExpressionAttributeValues={":seen": item["ttl"]},
             )

@@ -22,6 +22,7 @@ from sim.replay import Recorder, Summary, fingerprint, percentile
 from sim.riders import RiderLoad
 
 MAP_RADIUS_M = 4500.0
+PING_SETTLE_S = 6.0
 
 
 async def wait_healthy(client: httpx.AsyncClient, urls: list[str], timeout_s: float = 120) -> None:
@@ -89,6 +90,8 @@ async def run(
         # TTL evidence: one driver goes quiet; it must vanish once its ttl passes.
         probe = fleet.driver_ids[0]
         fleet.pause(probe)
+        # let a ping already on the wire land before reading the ttl it set
+        await asyncio.sleep(PING_SETTLE_S)
         probe_item = (await client.get(f"{loc}/drivers/{probe}")).json()
         stopped_at = time.time()
         ttl_epoch = int(probe_item["ttl"])
