@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { CityMap, type MapHighlight } from "../components/CityMap";
 import { Reveal } from "../components/Reveal";
-import { REAL } from "../real";
+import { SIMULATION_CONFIG } from "../demo";
 import { haversineM } from "../sim/geo";
 import * as geohash from "../sim/geohash";
 import { useWorld } from "../sim/WorldProvider";
@@ -40,7 +40,7 @@ export function Cells() {
   }
 
   // ttl demo
-  const driverId = REAL.silencedDriver;
+  const driverId = SIMULATION_CONFIG.silencedDriver;
   const item = world.index.getDriver(driverId);
   const silenced = world.silenced.has(driverId);
   const remaining = item ? item.ttl - world.now : 0;
@@ -204,16 +204,16 @@ export function Cells() {
               {silenced && sinceSilence !== null && (
                 <div className="ttl-timeline">
                   <span className="tag is-coral">silenced at t+{silencedAt?.toFixed(1)} s</span>
-                  {sinceSilence >= REAL.visibleAfterS && (
-                    <span className="tag is-lime">after {REAL.visibleAfterS} s: visible</span>
+                  {sinceSilence >= SIMULATION_CONFIG.visibleAfterS && (
+                    <span className="tag is-lime">after {SIMULATION_CONFIG.visibleAfterS} s: visible</span>
                   )}
                   {!visible && <span className="tag is-coral">after ttl ({world.ttlSeconds} s): gone</span>}
                 </div>
               )}
               {!silenced && (
                 <p style={{ color: "var(--ink-3)", fontSize: 13 }}>
-                  The demo silences one driver and reads it back: visible after {REAL.visibleAfterS} s, gone after the
-                  {" "}{REAL.ttlSeconds} s ttl. No cleanup job, the read filters <code>ttl &gt; now</code>.
+                  This browser model silences one driver and reads it back: visible after {SIMULATION_CONFIG.visibleAfterS} s, gone after the
+                  {" "}{SIMULATION_CONFIG.ttlSeconds} s ttl. No cleanup job, the read filters <code>ttl &gt; now</code>.
                 </p>
               )}
             </div>

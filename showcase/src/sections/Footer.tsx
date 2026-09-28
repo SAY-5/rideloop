@@ -8,12 +8,12 @@ export function Footer() {
             RideLoop
           </span>
           <p className="footer-note">
-            This page is a browser port of the real services: three Python microservices, a DynamoDB
+            This page illustrates the dispatch path of three Python microservices, a DynamoDB
             driver index partitioned by geohash with TTL expiry, and a PostgreSQL trip schema. The
-            geohash, index, matcher and simulators here are line-for-line ports checked against the
-            repository's test vectors; the latency figures in this tab are modeled from where the real
-            latency comes from (sweep wait, partition reads, conditional claim, commit), and the headline
-            numbers are from the measured run. Traffic is synthetic.
+            geohash, index and matcher share test vectors with the repository. The simulation uses
+            synthetic traffic, a virtual clock and modeled latency (sweep wait, partition reads,
+            conditional claim, commit). It does not execute the backend's offer, decline or full trip
+            lifecycle and does not measure service latency or capacity.
           </p>
         </div>
         <ul className="footer-links">

@@ -2,7 +2,7 @@ import { motion, useReducedMotion } from "framer-motion";
 import { CityMap } from "../components/CityMap";
 import { CountUp } from "../components/CountUp";
 import { useWorld } from "../sim/WorldProvider";
-import { REAL } from "../real";
+import { SIMULATION_CONFIG } from "../demo";
 
 
 export function Hero() {
@@ -25,13 +25,13 @@ export function Hero() {
             RideLoop dispatch, in the browser
           </motion.span>
           <motion.h1 className="hero-title" {...rise(0.15)}>
-            Five hundred rides a&nbsp;minute, <em>matched.</em>
+            A city of drivers. One ride, <em>matched.</em>
           </motion.h1>
           <motion.p className="lede" {...rise(0.28)}>
             Driver positions land in a geohash-partitioned index with a TTL. A dispatcher sweeps
             requested trips, ranks the drivers around each pickup nearest first, and claims one with
-            a conditional write that cannot hand a driver to two riders. This page runs a faithful
-            TypeScript port of that path against 300 synthetic drivers.
+            a conditional write that cannot hand a driver to two riders. Explore a TypeScript model
+            of that dispatch path against {SIMULATION_CONFIG.drivers} synthetic drivers.
           </motion.p>
           <motion.div className="hero-actions" {...rise(0.4)}>
             <a className="btn btn-primary" href="#load">
@@ -41,39 +41,36 @@ export function Hero() {
               See how it works
             </a>
           </motion.div>
-          <motion.dl className="hero-stats" {...rise(0.52)}>
+          <motion.dl className="hero-stats" aria-label="Simulation configuration" {...rise(0.52)}>
             <div className="stat">
-              <dt className="stat-label">matches per minute</dt>
+              <dt className="stat-label">simulated drivers</dt>
               <dd className="stat-value is-lime">
-                <CountUp to={REAL.perMinute} duration={1.8} delay={0.6} />
+                <CountUp to={SIMULATION_CONFIG.drivers} duration={1.8} delay={0.6} />
               </dd>
             </div>
             <div className="stat">
-              <dt className="stat-label">rides matched</dt>
+              <dt className="stat-label">scheduled rides</dt>
               <dd className="stat-value">
-                <CountUp to={REAL.matched} duration={1.8} delay={0.7} />
-                <span className="stat-unit">/ {REAL.submitted}</span>
+                <CountUp to={Math.floor(SIMULATION_CONFIG.ratePerSecond * SIMULATION_CONFIG.durationS)} duration={1.8} delay={0.7} />
               </dd>
             </div>
             <div className="stat">
-              <dt className="stat-label">match latency p50</dt>
+              <dt className="stat-label">requests / second</dt>
               <dd className="stat-value">
-                <CountUp to={REAL.p50} duration={1.6} delay={0.8} />
-                <span className="stat-unit">ms</span>
+                <CountUp to={SIMULATION_CONFIG.ratePerSecond} duration={1.6} delay={0.8} />
               </dd>
             </div>
             <div className="stat">
-              <dt className="stat-label">p95</dt>
+              <dt className="stat-label">load duration</dt>
               <dd className="stat-value">
-                <CountUp to={REAL.p95} duration={1.6} delay={0.9} />
-                <span className="stat-unit">ms</span>
+                <CountUp to={SIMULATION_CONFIG.durationS} duration={1.6} delay={0.9} />
+                <span className="stat-unit">s</span>
               </dd>
             </div>
           </motion.dl>
           <motion.p className="hero-note" {...rise(0.65)}>
-            Headline figures are from <code>make demo</code> on a laptop: three Python services,
-            DynamoDB Local and PostgreSQL, 300 drivers, 600 rides in 60 s, every number read back
-            from the running system.
+            These are workload settings, not benchmark results. The browser uses a virtual clock
+            and modeled latency; it does not call the Python services, DynamoDB Local or PostgreSQL.
           </motion.p>
         </div>
         <motion.div
