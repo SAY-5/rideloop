@@ -1,6 +1,5 @@
 """Every service exposes /metrics; the dispatcher's counters track what the matcher did."""
 
-import threading
 from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
@@ -137,17 +136,11 @@ def test_claim_conflicts_and_ttl_expiries_are_counted(store, session_factory):
     before = scrape(client)
 
     pos = store.put_position("c", lat, lng)
-    barrier = threading.Barrier(8)
-
-    def claim(i):
-        barrier.wait()
-        store.try_mark_busy(pos.cell, "c", f"t{i}")
-
-    threads = [threading.Thread(target=claim, args=(i,)) for i in range(8)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    # Deterministic accounting only: Moto does not implement concurrent atomicity.
+    # The eight-claim race and exact conflict count run against DynamoDB Local separately.
+    assert store.try_mark_busy(pos.cell, "c", "winner") is True
+    for i in range(7):
+        assert store.try_mark_busy(pos.cell, "c", f"loser-{i}") is False
     assert value(scrape(client), "rideloop_claim_conflicts_total") == (
         value(before, "rideloop_claim_conflicts_total") + 7
     )

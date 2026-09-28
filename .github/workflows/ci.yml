@@ -23,8 +23,18 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      dynamodb:
+        image: amazon/dynamodb-local:2.5.2
+        ports:
+          - 8000:8000
+        options: >-
+          --health-cmd "curl -s -o /dev/null http://localhost:8000/"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 40
     env:
       DATABASE_URL: postgresql+psycopg://rideloop:rideloop@localhost:5432/rideloop
+      TEST_DYNAMODB_ENDPOINT: http://127.0.0.1:8000
       AWS_DEFAULT_REGION: us-east-1
     steps:
       - uses: actions/checkout@v4

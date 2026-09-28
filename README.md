@@ -99,12 +99,53 @@ requested, matched, en route and completed.
 
 ```
 make setup      # uv sync, pnpm install
-make test-db    # throwaway PostgreSQL on localhost:5434 for the integration tests
-make test       # pytest: unit + integration (moto for DynamoDB, real PostgreSQL)
+make test       # full pytest suite; start isolated services and set endpoints below
 make lint       # ruff check, ruff format --check, eslint
 make migrate    # alembic upgrade head against DATABASE_URL
 make tables     # create the DynamoDB table with TTL against DYNAMODB_ENDPOINT
 ```
+
+The full suite requires PostgreSQL 16 and DynamoDB Local 2.5.2. Use disposable
+services: the PostgreSQL fixture rebuilds the schema and truncates test tables.
+Never point `TEST_DATABASE_URL` at a database containing data you want to keep.
+The following creates uniquely named containers on automatically assigned loopback
+ports, without replacing existing containers:
+
+```sh
+test_run_id=$(uuidgen)
+test_pg="rideloop-test-pg-$test_run_id"
+test_dynamo="rideloop-test-dynamo-$test_run_id"
+docker run -d --rm --name "$test_pg" \
+  -e POSTGRES_USER=rideloop -e POSTGRES_PASSWORD=rideloop -e POSTGRES_DB=rideloop \
+  -p 127.0.0.1::5432 postgres:16
+docker run -d --rm --name "$test_dynamo" \
+  -p 127.0.0.1::8000 amazon/dynamodb-local:2.5.2 \
+  -jar DynamoDBLocal.jar -inMemory -sharedDb
+```
+
+Once `docker exec "$test_pg" pg_isready -U rideloop` reports accepting connections:
+
+```sh
+TEST_DATABASE_URL="postgresql+psycopg://rideloop:rideloop@$(docker port "$test_pg" 5432/tcp)/rideloop" \
+TEST_DYNAMODB_ENDPOINT="http://$(docker port "$test_dynamo" 8000/tcp)" make test
+# Stop only these disposable test services when finished; their data is discarded.
+docker stop "$test_pg" "$test_dynamo"
+```
+
+`TEST_DYNAMODB_ENDPOINT` is mandatory for the concurrency tests and accepts only
+literal loopback HTTP addresses with an explicit port. The fixture uses fake AWS
+credentials, bounded requests/readiness, and a new UUID-named table per test, then
+closes its clients/executor and deletes only that table. A missing or unavailable
+service fails the suite; it never skips these tests or falls back to Moto.
+
+Non-race tests use Moto, including deterministic conflict-counter and TTL accounting.
+[Moto does not support concurrent access](https://docs.getmoto.org/en/latest/docs/faq.html#is-moto-concurrency-safe),
+so the 8- and 16-claim exclusivity tests and six-matcher/twelve-trip race use DynamoDB
+Local. They record every result/error, require exactly one winning claim, check exact
+conflict deltas, and read the stored winner consistently by its base key. This proves
+local-emulator acceptance, not live-AWS behavior or production performance. Run only
+these acceptance tests with `uv run pytest -q -m integration` and both
+`DATABASE_URL` and `TEST_DYNAMODB_ENDPOINT` set to the isolated services.
 
 Tests cover geohash vectors and neighbors, haversine, input validation, the
 TTL attribute and read-side expiry filter, cell changes carrying dispatch
@@ -120,7 +161,8 @@ without the decliner, the Prometheus counters after a sweep, a claim race and
 an expiry, a replayed stream reproducing its own matches and fingerprint, and
 an in-process run of 500 trips that must sustain at least 500 matches per
 minute. CI (`.github/workflows/ci.yml`) runs
-the same steps with a `postgres:16` service container, a separate job for
+the full suite with `postgres:16` and `amazon/dynamodb-local:2.5.2` service containers,
+a separate job for
 the `web/` rider app, and an independent `showcase/` job for its locked build,
 simulation selfcheck and rendered provenance regression tests.
 

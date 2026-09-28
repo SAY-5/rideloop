@@ -43,4 +43,5 @@ select = ["E", "F", "I", "UP", "B", "SIM", "W"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["integration: required DynamoDB Local concurrency acceptance tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
