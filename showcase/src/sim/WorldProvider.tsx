@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { World } from "./world";
+import { SIMULATION_CONFIG } from "../demo";
 
 type FrameListener = (world: World) => void;
 
@@ -31,7 +32,11 @@ const MAX_FRAME_S = 0.12;
 
 export function WorldProvider({ children }: { children: ReactNode }) {
   const world = useMemo(() => {
-    const w = new World({ seed: 42, driverCount: 300, ttlSeconds: 20 });
+    const w = new World({
+      seed: 42,
+      driverCount: SIMULATION_CONFIG.drivers,
+      ttlSeconds: SIMULATION_CONFIG.ttlSeconds,
+    });
     w.tick(1);
     return w;
   }, []);

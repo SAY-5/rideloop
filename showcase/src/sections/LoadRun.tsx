@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { CityMap } from "../components/CityMap";
 import { Reveal } from "../components/Reveal";
-import { REAL } from "../real";
+import { HISTORICAL_DEMOS, SIMULATION_CONFIG } from "../demo";
 import { useWorld } from "../sim/WorldProvider";
 
 const SPEEDS = [1, 2, 4, 8];
@@ -21,14 +21,13 @@ export function LoadRun() {
   const submitting = world.scheduledRemaining > 0;
   const running = startedAt !== null && (submitting || counts.pending > 0 || counts.submitted < total);
   const done = startedAt !== null && !running && counts.submitted >= total && total > 0;
-  const elapsed = startedAt === null ? 0 : Math.min(REAL.durationS, world.now - startedAt);
+  const elapsed = startedAt === null ? 0 : Math.min(SIMULATION_CONFIG.durationS, world.now - startedAt);
   const rateSoFar = done ? world.rate.perMinute() : world.rate.perMinuteSoFar(world.now);
   const p50 = world.latency.p50();
   const p95 = world.latency.p95();
-  const spanS = world.rate.perMinute() && world.rate.firstRequestAt !== null ? (world.rate.total / (world.rate.perMinute() as number)) * 60 : null;
 
   const start = () => {
-    setTotal(world.scheduleLoad(REAL.ratePerSecond, REAL.durationS));
+    setTotal(world.scheduleLoad(SIMULATION_CONFIG.ratePerSecond, SIMULATION_CONFIG.durationS));
     setStartedAt(world.now);
   };
 
@@ -53,10 +52,9 @@ export function LoadRun() {
             </h2>
           </div>
           <p className="lede">
-            <code>make demo</code> seeds 300 drivers, submits rides at 10 per second for 60 seconds and
-            rides each to completion. The same schedule runs here against the in-browser port: riders
+            The browser model seeds {SIMULATION_CONFIG.drivers} drivers and schedules rides at {SIMULATION_CONFIG.ratePerSecond} per second for {SIMULATION_CONFIG.durationS} simulated seconds: riders
             arrive on the clock, the dispatcher sweeps every 100 ms, drivers are released 7 s after a match.
-            The submission rate is the ceiling, not the matcher.
+            Results below describe this model, with modeled latency, not backend performance.
           </p>
         </Reveal>
 
@@ -76,24 +74,24 @@ export function LoadRun() {
             </div>
 
             <div className="progress" aria-hidden="true">
-              <span style={{ width: `${(elapsed / REAL.durationS) * 100}%` }} />
+              <span style={{ width: `${(elapsed / SIMULATION_CONFIG.durationS) * 100}%` }} />
             </div>
             <p className="mono progress-label" aria-live="polite">
               {startedAt === null
                 ? "idle"
                 : submitting
-                  ? `submitting, ${elapsed.toFixed(1)} s of ${REAL.durationS} s`
+                  ? `submitting, ${elapsed.toFixed(1)} s of ${SIMULATION_CONFIG.durationS} s`
                   : running
                     ? `draining ${counts.pending} pending`
                     : "complete"}
             </p>
 
-            <dl className="load-stats">
+            <dl className="load-stats" aria-label="Modeled browser load results">
               <div className="stat">
                 <dt className="stat-label">submitted</dt>
                 <dd className="stat-value">
                   {counts.submitted}
-                  <span className="stat-unit">/ {total || REAL.submitted}</span>
+                  <span className="stat-unit">/ {total || Math.floor(SIMULATION_CONFIG.ratePerSecond * SIMULATION_CONFIG.durationS)}</span>
                 </dd>
               </div>
               <div className="stat">
@@ -104,11 +102,11 @@ export function LoadRun() {
                 </dd>
               </div>
               <div className="stat">
-                <dt className="stat-label">matches / minute</dt>
+                <dt className="stat-label">matches / simulated minute</dt>
                 <dd className="stat-value is-lime">{fmt(rateSoFar)}</dd>
               </div>
               <div className="stat">
-                <dt className="stat-label">p50 / p95</dt>
+                <dt className="stat-label">modeled latency p50 / p95</dt>
                 <dd className="stat-value">
                   {fmt(p50)}
                   <span className="stat-unit">/ {fmt(p95)} ms</span>
@@ -133,37 +131,22 @@ export function LoadRun() {
               ))}
             </div>
 
-            <table className="compare" aria-label="Browser run compared with the measured demo">
-              <thead>
-                <tr>
-                  <th scope="col"></th>
-                  <th scope="col">this run</th>
-                  <th scope="col">make demo</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <th scope="row">rides matched</th>
-                  <td>{counts.matched} / {counts.submitted}</td>
-                  <td>{REAL.matched} / {REAL.submitted}</td>
-                </tr>
-                <tr>
-                  <th scope="row">matches per minute</th>
-                  <td className="is-lime">{fmt(rateSoFar)}{done && spanS ? ` (over ${spanS.toFixed(1)} s)` : ""}</td>
-                  <td className="is-lime">{REAL.perMinute} (over {REAL.spanS} s)</td>
-                </tr>
-                <tr>
-                  <th scope="row">latency p50 / p95</th>
-                  <td>{fmt(p50)} / {fmt(p95)} ms</td>
-                  <td>{REAL.p50} / {REAL.p95} ms</td>
-                </tr>
-                <tr>
-                  <th scope="row">drivers seeded</th>
-                  <td>{world.drivers.length}, pinging every {world.pingIntervalS} s</td>
-                  <td>{REAL.drivers}, {REAL.positionPosts.toLocaleString()} posts</td>
-                </tr>
-              </tbody>
-            </table>
+            <aside className="mono" aria-label="Historical demo provenance">
+              <p>
+                Historical, unverified: the repository contains two different demo transcripts.
+                Neither has retained raw output, a run timestamp or machine metadata. They are not
+                current benchmarks and are not comparable to this simplified browser model.
+              </p>
+              <ul>
+                {HISTORICAL_DEMOS.map((demo) => (
+                  <li key={demo.sourceRevision}>
+                    <a href={`https://github.com/SAY-5/rideloop/blob/${demo.sourceRevision}/README.md`} rel="noreferrer">
+                      {demo.label} ({demo.sourceRevision.slice(0, 7)})
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </aside>
 
             <ul className="event-feed" aria-label="Recent dispatch events">
               {recent.length === 0 && <li className="trace-empty">match events will stream here</li>}

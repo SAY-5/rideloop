@@ -2,8 +2,8 @@
 
 Ride request and dispatch platform: three Python microservices, a DynamoDB
 driver index partitioned by geohash with TTL expiry, a PostgreSQL trip schema,
-and a React rider map. Synthetic traffic drives it at about 600 rides a minute
-on a laptop.
+and a React rider map. The local demo submits synthetic traffic at 10 rides
+per second; the browser showcase models the dispatch path on a virtual clock.
 
 | service | port | stores | job |
 | --- | --- | --- | --- |
@@ -47,6 +47,17 @@ figure is read back from the running system (trip timestamps from
 PostgreSQL, fleet visibility from DynamoDB, the dispatch service's own stats
 endpoint).
 
+### Historical v5 transcript — unverified
+
+The following summary was recorded in documentation at
+[`905549c`](https://github.com/SAY-5/rideloop/blob/905549cfaa0daa1b58f920e84c61b1cfa725cbb8/README.md).
+No raw run log, UTC run timestamp or machine metadata was retained in the
+repository. It is not a current verified benchmark. The earlier showcase's
+601/min and 59/101 ms came from a different, pre-offer/decline transcript;
+neither is a valid direct comparison with the browser model. See
+[measurement provenance](docs/measurement-provenance.md) for both sources and
+the evidence required for new claims. Documentation commit time is not run time.
+
 ```
 $ make demo
 ...
@@ -65,16 +76,11 @@ ttl expiry                driver drv-000 stopped at 15:16:15; visible after 3s: 
 ```
 
 The demo compose file sets `POSITION_TTL_SECONDS=20` so the expiry is visible
-within the run; the service default is 60 s. The submission rate is the
-ceiling here, not the matcher: median match latency is around 60 ms end to
-end, and the p95 is the one ride in ten whose first driver declined and that
-went round the queue once more (about a second: the decline lands on the
-driver's next ping, the rematch on the next sweep). With the whole stack,
-DynamoDB Local and the load generator sharing one laptop the 300 drivers
-manage roughly 150 to 200 position posts a second rather than 300; the
-position endpoint on its own takes about 500 a second. While the stack is
-up, `curl localhost:8003/metrics` shows the same numbers as Prometheus
-counters.
+within the run; the service default is 60 s. The transcript reports a higher
+p95 after offer declines and rematching were introduced. Without the raw
+latency samples and environment metadata, that observation is not a measured
+causal attribution or a capacity claim. While the stack is up,
+`curl localhost:8003/metrics` exposes the live service's Prometheus counters.
 
 If 5432 or 8000 are taken on your machine:
 
@@ -114,8 +120,9 @@ without the decliner, the Prometheus counters after a sweep, a claim race and
 an expiry, a replayed stream reproducing its own matches and fingerprint, and
 an in-process run of 500 trips that must sustain at least 500 matches per
 minute. CI (`.github/workflows/ci.yml`) runs
-the same steps with a `postgres:16` service container and a separate job for
-the web app.
+the same steps with a `postgres:16` service container, a separate job for
+the `web/` rider app, and an independent `showcase/` job for its locked build,
+simulation selfcheck and rendered provenance regression tests.
 
 ## Configuration
 
@@ -281,6 +288,8 @@ sim/               city grid, driver fleet, rider load, demo orchestrator, ride 
 scripts/           create_tables.py
 tests/             pytest suite
 web/               Vite + React + TypeScript rider map
+showcase/          browser-only dispatch model, not a live backend benchmark
+docs/              measurement provenance and historical source references
 ```
 
 ## Releases
