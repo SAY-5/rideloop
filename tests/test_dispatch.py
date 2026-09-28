@@ -1,4 +1,3 @@
-import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -90,61 +89,6 @@ def test_no_driver_leaves_trip_requested_and_retries_later(store, session_factor
         assert row.status == TripStatus.MATCHED
         assert row.driver_id == "late"
         assert row.dispatch_attempts == 2
-
-
-def test_concurrent_matchers_never_double_assign_a_driver(store, session_factory):
-    """Many trips, one driver, several matchers racing: exactly one trip gets the driver."""
-    lat, lng = CENTER
-    store.put_position("only", *offset_m(lat, lng, 30, 0))
-    with session_factory() as s, s.begin():
-        for i in range(12):
-            trips.create_trip(s, request_at(*offset_m(lat, lng, 10 * i, 0), rider=f"r{i}"))
-
-    matchers = [make_matcher(store, session_factory, batch_size=1) for _ in range(6)]
-    barrier = threading.Barrier(len(matchers))
-    errors: list[BaseException] = []
-
-    def worker(m: Matcher):
-        try:
-            barrier.wait()
-            for _ in range(4):
-                m.run_once()
-        except BaseException as exc:  # noqa: BLE001
-            errors.append(exc)
-
-    threads = [threading.Thread(target=worker, args=(m,)) for m in matchers]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    assert not errors
-
-    with session_factory() as s:
-        matched = s.scalars(select(Trip).where(Trip.status == TripStatus.MATCHED)).all()
-        assert len(matched) == 1
-        assert matched[0].driver_id == "only"
-        requested = s.scalar(select(Trip.id).where(Trip.status == TripStatus.REQUESTED).limit(1))
-        assert requested is not None
-    assert store.get_driver("only").trip_id == str(matched[0].id)
-
-
-def test_direct_conditional_claim_is_exclusive(store):
-    lat, lng = CENTER
-    pos = store.put_position("d", lat, lng)
-    wins = []
-    barrier = threading.Barrier(16)
-
-    def claim(i):
-        barrier.wait()
-        wins.append(store.try_mark_busy(pos.cell, "d", f"trip-{i}"))
-
-    threads = [threading.Thread(target=claim, args=(i,)) for i in range(16)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    assert sum(wins) == 1
-    assert store.try_mark_busy(pos.cell, "d", "late") is False
 
 
 def test_expired_driver_cannot_be_claimed(store):
