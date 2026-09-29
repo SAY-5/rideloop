@@ -47,7 +47,7 @@ figure is read back from the running system (trip timestamps from
 PostgreSQL, fleet visibility from DynamoDB, the dispatch service's own stats
 endpoint).
 
-### Historical v5 transcript — unverified
+### Historical v5 transcript (unverified)
 
 The following summary was recorded in documentation at
 [`905549c`](https://github.com/SAY-5/rideloop/blob/905549cfaa0daa1b58f920e84c61b1cfa725cbb8/README.md).
