@@ -80,15 +80,25 @@ trips
   rider_id          varchar(64)
   pickup_lat/lng    double precision
   dropoff_lat/lng   double precision
-  status            trip_status enum (requested, matched, en_route, completed, cancelled)
+  status            trip_status enum (requested, matched, en_route, arrived,
+                                     in_trip, completed, cancelled)
   driver_id         varchar(64) null
   requested_at      timestamptz
   matched_at        timestamptz null
+  arrived_at        timestamptz null
+  started_at        timestamptz null
   completed_at      timestamptz null
   match_latency_ms  integer null
+  pickup_eta_s      integer null
+  pickup_cell       varchar(12) null
+  surge_multiplier  double precision
+  offered_at        timestamptz null
+  accepted_at       timestamptz null
+  declined_by       varchar(64)[] of driver ids
   dispatch_attempts integer
   next_attempt_at   timestamptz
-  indexes: (status), (requested_at), (status, next_attempt_at)
+  indexes: (status), (requested_at), (status, next_attempt_at),
+           (pickup_cell, requested_at), (status, offered_at)
 
 drivers
   id, name, status, created_at            registry; status mirrors the dispatch state
@@ -243,7 +253,7 @@ Metrics live in `rideloop_common/metrics.py` and are incremented where the
 event happens: the matcher counts matches, observes the latency it just
 wrote to the trip, and counts trips it could not place; the DynamoDB store
 counts a claim conflict whenever the conditional `try_mark_busy` fails and a
-TTL expiry whenever a read drops an expired row; the ride_request service
+TTL expiry when a read first stamps an expired row; the ride_request service
 counts offer outcomes. `services/common.py` adds a middleware that counts and
 times every request by route template, and `GET /metrics` renders the
 registry. The driver_location and ride_request containers run two uvicorn
@@ -291,6 +301,9 @@ the synthesized streams (`make replay`) are the ones that reproduce exactly.
 
 `tests/test_throughput.py` runs the matcher in-process against moto and a real
 PostgreSQL with 300 drivers and 500 trips and asserts at least 500 matches per
-minute. `make demo` measures the same thing end to end through the HTTP
-services with DynamoDB Local; the numbers printed there are the ones quoted in
-the README.
+minute. This test immediately completes matched trips to reuse the drivers;
+it is not the end-to-end offer/decline/rematch workload or a capacity benchmark.
+`make demo` drives the HTTP services with DynamoDB Local and reports that run's
+results. The README's existing figures are unverified historical transcripts,
+not retained benchmark records. See [measurement provenance](docs/measurement-provenance.md)
+for the evidence required before publishing a new measured result.
