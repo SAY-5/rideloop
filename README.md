@@ -43,7 +43,7 @@ that post a position every second (spread over three worker processes so the
 load generator cannot starve itself), submits rides at 10 per second for 60
 seconds, has drivers accept the offers (and decline one in ten, to exercise
 the rematch), rides each one to completion, and prints a summary. Every
-figure is read back from the running system (trip timestamps from
+figure printed by a new run is read back from the running system (trip timestamps from
 PostgreSQL, fleet visibility from DynamoDB, the dispatch service's own stats
 endpoint).
 
