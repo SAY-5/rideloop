@@ -337,8 +337,16 @@ docs/              measurement provenance and historical source references
 ## Releases
 
 The project grew in five tagged releases, each with its own migration, tests
-and GitHub release notes.
+and GitHub release notes, and has had one patch release since.
 
+- **v5.0.1** Dependency patch. `uv.lock` moves certifi to 2026.10.19,
+  urllib3 to 2.8.0, mako to 1.4.2 and werkzeug to 3.1.9; the `web/` and
+  `showcase/` lockfiles move vite to 7.3.7 and source-map-js to 1.2.2, and
+  `web/` moves brace-expansion to 1.1.21 and 5.0.12, each the lowest release
+  that clears its published advisories. It also carries the work merged since
+  v5.0.0: the showcase labels its figures as modeled settings and the old
+  transcripts as unverified, the claim races run against DynamoDB Local, and
+  the docs describe the test setup, trip schema and measurement provenance.
 - **v5.0.0** Observability and replay. Prometheus `GET /metrics` on every
   service: matches, match latency histogram, matches per minute, unmatched
   sweeps, claim conflicts, TTL expiries (the read path now deletes expired
